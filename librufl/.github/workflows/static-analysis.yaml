@@ -1,0 +1,107 @@
+name: "Static Analysis"
+
+on: [push]
+
+jobs:
+  codeql:
+    name: codeql
+    runs-on: ubuntu-22.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ['cpp']
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+      with:
+        fetch-depth: 1
+
+    - name: apt-get install packages
+      run: sudo apt-get update -qq &&
+           sudo apt-get install --no-install-recommends -y
+               bison
+               build-essential
+               check
+               clang
+               flex
+               git
+               gperf
+               llvm
+               pkg-config
+
+    - name: Get env.sh
+      run: |
+           mkdir projects
+           wget -O projects/env.sh https://raw.githubusercontent.com/netsurf-browser/netsurf/refs/heads/master/docs/env.sh
+
+    # We need the arm-unknown-riscos toolchain for the OSLib headers
+    # look for toolchain for this branch name first, then default to master
+    - name: Download toolchain
+      run: |
+        set -e
+        
+        TOOLCHAIN_NAME="arm-unknown-riscos"
+        BRANCH_NAME="${{ github.ref_name }}"
+        
+        # Function to try downloading toolchain from a specific tag
+        download_toolchain() {
+          local ref="$1"
+          local download_url="https://github.com/netsurf-browser/toolchains/releases/download/${ref}/${TOOLCHAIN_NAME}.tar.gz"
+          
+          echo "Trying to download toolchain from ref: $ref"
+          echo "URL: $download_url"
+          
+          if curl -f -L -o "${TOOLCHAIN_NAME}.tar.gz" "$download_url"; then
+            echo "Got toolchain with ref: $ref"
+            return 0
+          else
+            echo "Failed to download toolchain with ref: $ref"
+            return 1
+          fi
+        }
+        
+        # Try branch-specific toolchain first
+        safe_branch=$(echo "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9._-]/-/g')
+        branch_tag="gh-${safe_branch}-unstable"
+        
+        if download_toolchain "$branch_tag"; then
+          echo "Downloaded branch-specific toolchain"
+        elif download_toolchain "gh-master-unstable"; then
+          echo "Downloaded fallback master toolchain"
+        else
+          echo "Failed to download any toolchain variant"
+          exit 1
+        fi
+
+    - name: Install toolchain
+      run: |
+        echo "Installing toolchain: arm-unknown-riscos"
+        sudo tar -xzf "arm-unknown-riscos.tar.gz" -C /
+        rm "arm-unknown-riscos.tar.gz"
+        echo "Toolchain testament:"
+        cat /opt/netsurf/arm-unknown-riscos/BUILD_INFO.txt
+
+    - name: Build and install project deps
+      env:
+        TARGET: ${{ github.event.repository.name }}
+      run: |
+          export TARGET_WORKSPACE="$(pwd)/projects"
+          source projects/env.sh
+          ns-clone -d -s
+          ns-make-libs install
+
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v4
+      with:
+        languages: ${{ matrix.language }}
+
+    - name: Build Library
+      run: |
+          export TARGET_WORKSPACE="$(pwd)/projects"
+          source projects/env.sh
+          make -j"$(nproc)"
+
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v4

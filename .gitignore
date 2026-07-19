@@ -1,0 +1,7 @@
+inst-framebuffer/
+build-*/
+**/build-*/
+netsurf/build/
+netsurf/nsfb
+switch-dist/nsfb-stripped
+*.o
