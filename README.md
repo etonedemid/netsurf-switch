@@ -4,12 +4,6 @@ A true port of the NetSurf browser engine to Nintendo Switch homebrew, the first
 of its kind. Built with devkitA64/libnx in WSL Arch Linux. Verified rendering
 real sites over HTTPS on hardware.
 
-## Artifact
-
-- `netsurf.nro` (~32 MB), deployed to `sdmc:/switch/netsurf.nro`. **Launch via
-  title takeover** (hold R while opening a game) for application-mode memory
-  (~3.2 GB); album-applet mode works but has far less RAM.
-
 ## What's in
 
 - Engine at upstream git HEAD ("3.12 Dev"): HTML5 parsing (hubbub), CSS
@@ -22,14 +16,7 @@ real sites over HTTPS on hardware.
 - **@font-face webfonts**: font families declared by page CSS are fetched
   (ttf/otf/woff; not woff2) and rendered, one face per family
 - **Native Switch keyboard (swkbd)**: tap/click the URL bar or any text field
-- **Audio player with transport bar**: clicking an audio link (mp3/ogg/
-  flac/m4a/opus/wav) plays it *without blocking the browser* - a bar
-  appears above the status bar with `<<10` / Pause / `10>>` / Stop and a
-  title plus time readout, and you can keep browsing while it plays.
-  https audio downloads to the SD through NetSurf's own TLS first (the
-  ffmpeg portlib has no TLS) with progress shown in the status bar;
-  http audio streams straight from ffmpeg.
-- **Video** still uses the fullscreen modal player (B/Plus exits).
+- **Audio player with transport bar**
 - **Bookmarks**: `+Bkm` adds the current page, `Bkms` opens the bookmark
   list as a page. Stored as a standard NetSurf hotlist HTML file at
   `sdmc:/switch/netsurf/Hotlist`.
@@ -38,24 +25,6 @@ real sites over HTTPS on hardware.
   mouse/keyboard. Raw-joystick fallback if the gamepad mapping fails;
   drift-proof move limiter.
 - Diagnostics: everything logs to `sdmc:/switch/netsurf/stderr.log`
-
-## JavaScript
-
-- Engine: **QuickJS-ng** (ES2023, MIT), the only JS backend - Duktape has
-  been dropped. Bindings are hand-written over libdom and live in
-  `netsurf/content/handlers/javascript/quickjs/`: document, Node, Element,
-  Text, Event, addEventListener plus `on*` attributes, querySelector for
-  simple selectors, innerHTML injection, timers, location/navigator, and
-  HTMLMediaElement (`<audio>`, `new Audio()`, `.play()`) wired to the
-  Switch audio player.
-- **Off by default**: script-gated sites can render blank when their
-  scripts hit an API this DOM does not implement yet, and the no-JS
-  fallbacks are usually more usable. Flip it with the toolbar's
-  "JS off/JS on" button (persists), or `enable_javascript:1` in
-  `sdmc:/switch/netsurf/Choices`.
-- Chosen over Moddable XS: XS is marginally more standards-conformant but its
-  LGPL-3.0 license is FSF-incompatible with NetSurf's GPL-2.0-only in a single
-  statically-linked NRO; QuickJS-ng is MIT.
 
 ## Not yet done
 
