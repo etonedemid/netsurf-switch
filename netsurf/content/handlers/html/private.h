@@ -360,6 +360,13 @@ nserror html_css_fetcher_add_item(dom_string *data, struct nsurl *base_url,
  * Construct an event and fire it at the DOM
  *
  */
+struct form_control;
+
+/**
+ * Fire input and change events at a form control after a user change.
+ */
+void html_fire_change(struct form_control *control);
+
 bool fire_generic_dom_event(dom_string *type, dom_node *target,
 		    bool bubbles, bool cancelable);
 

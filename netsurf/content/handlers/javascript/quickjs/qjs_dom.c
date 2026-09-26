@@ -74,6 +74,8 @@ struct qjs_timer {
 	char *src;      /* string form of setTimeout */
 	int32_t ms;
 	bool repeat;
+	bool firing;    /* callback running: defer freeing */
+	bool cancelled; /* cleared while firing */
 	uint32_t id;
 };
 
@@ -2396,6 +2398,7 @@ static void qjs_timer_fire(void *p)
 		return;
 	}
 
+	tm->firing = true;
 	qjs_deadline_start(t);
 	if (!JS_IsUndefined(tm->func)) {
 		JSValue global = JS_GetGlobalObject(ctx);
@@ -2415,8 +2418,9 @@ static void qjs_timer_fire(void *p)
 	}
 	qjs_deadline_stop(t);
 	qjs_run_jobs(ctx);
+	tm->firing = false;
 
-	if (tm->repeat && !t->closed) {
+	if (tm->repeat && !t->closed && !tm->cancelled) {
 		guit->misc->schedule(tm->ms, qjs_timer_fire, tm);
 	} else {
 		qjs_timer_free(tm);
@@ -2478,6 +2482,11 @@ qjs_cleartimer(JSContext *ctx, JSValueConst this_val,
 
 	for (tm = t->timers; tm != NULL; tm = tm->next) {
 		if (tm->id == (uint32_t)id) {
+			if (tm->firing) {
+				/* freed when its callback returns */
+				tm->cancelled = true;
+				break;
+			}
 			guit->misc->schedule(-1, qjs_timer_fire, tm);
 			qjs_timer_free(tm);
 			break;
@@ -2922,6 +2931,12 @@ void qjs_dom_closethread(struct jsthread *t)
 	while (t->timers != NULL) {
 		struct qjs_timer *tm = t->timers;
 
+		if (tm->firing) {
+			/* freed by qjs_timer_fire when the callback returns */
+			qjs_timer_unlink(tm);
+			tm->cancelled = true;
+			continue;
+		}
 		guit->misc->schedule(-1, qjs_timer_fire, tm);
 		qjs_timer_free(tm); /* unlinks from t->timers */
 	}

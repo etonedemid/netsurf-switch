@@ -159,6 +159,7 @@ html_process_new_script(html_content *c,
 	nscript->async = false;
 	nscript->defer = false;
 	nscript->module = false;
+	nscript->data.handle = NULL;
 
 	nscript->type = type;
 
@@ -510,6 +511,7 @@ exec_src_script(html_content *c,
 		 */
 		/* mark duff script fetch as already started */
 		nscript->already_started = true;
+		nscript->data.handle = NULL;
 		NSLOG(netsurf, INFO, "Fetch failed with error %d", ns_error);
 	} else {
 		/* update base content active fetch count */

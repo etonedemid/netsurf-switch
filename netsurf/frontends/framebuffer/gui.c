@@ -1150,10 +1150,10 @@ static nserror set_defaults(struct nsoption_s *defaults)
 
 	/* Set defaults for absent option strings */
 #ifdef __SWITCH__
-	/* JavaScript stays off by default: Duktape's partial DOM makes
-	 * script-gated sites render blank, while their no-JS fallbacks are
-	 * usable. Users can set enable_javascript:1 in
-	 * sdmc:/switch/netsurf/Choices. */
+	/* JavaScript (QuickJS) is on by default; the Switch CPU is
+	 * slower, so runaway scripts are cut off sooner. Users can set
+	 * enable_javascript:0 in sdmc:/switch/netsurf/Choices. */
+	nsoption_set_int(script_timeout, 5);
 	nsoption_setnull_charp(ca_bundle, strdup("romfs:/res/ca-bundle.pem"));
 	nsoption_setnull_charp(cookie_file, strdup("sdmc:/switch/netsurf/Cookies"));
 	nsoption_setnull_charp(cookie_jar, strdup("sdmc:/switch/netsurf/Cookies"));
@@ -2847,12 +2847,33 @@ gui_window_start_throbber(struct gui_window *g)
 	framebuffer_schedule(100, throbber_advance, g);
 }
 
+/* Headless test hook: NS_CLICK=x,y clicks that point of the page once,
+ * shortly after it first finishes loading. */
+static void fb_test_click_cb(void *pw)
+{
+	int x, y;
+
+	if (window_list == NULL ||
+	    sscanf(getenv("NS_CLICK"), "%d,%d", &x, &y) != 2)
+		return;
+	browser_window_mouse_click(window_list->bw, BROWSER_MOUSE_PRESS_1,
+			x, y);
+	browser_window_mouse_click(window_list->bw, BROWSER_MOUSE_CLICK_1,
+			x, y);
+}
+
 static void
 gui_window_stop_throbber(struct gui_window *gw)
 {
+	static bool test_clicked = false;
+
 	gw->throbber_index = -1;
 	fbtk_set_bitmap(gw->throbber, &throbber0);
 
+	if (getenv("NS_CLICK") != NULL && !test_clicked) {
+		test_clicked = true;
+		framebuffer_schedule(500, fb_test_click_cb, NULL);
+	}
 	if (getenv("NS_SCREENSHOT") != NULL) {
 		const char *d = getenv("NS_SCREENSHOT_DELAY");
 		framebuffer_schedule(d ? atoi(d) : 1000, fb_screenshot_cb, NULL);

@@ -131,6 +131,17 @@ bool fire_generic_dom_event(dom_string *type, dom_node *target,
 	return result;
 }
 
+/* Exported interface, see private.h */
+void html_fire_change(struct form_control *control)
+{
+	if (control == NULL || control->node == NULL)
+		return;
+	fire_generic_dom_event(corestring_dom_input, control->node,
+			true, false);
+	fire_generic_dom_event(corestring_dom_change, control->node,
+			true, false);
+}
+
 /* Exported interface, see html_internal.h */
 bool fire_dom_keyboard_event(dom_string *type, dom_node *target,
 		bool bubbles, bool cancelable, uint32_t key)

@@ -867,6 +867,7 @@ gadget_mouse_action(html_content *html,
 		mas->result.status = messages_get("FormCheckbox");
 		if (mouse & BROWSER_MOUSE_CLICK_1) {
 			mas->gadget.control->selected = !mas->gadget.control->selected;
+			html_fire_change(mas->gadget.control);
 			dom_html_input_element_set_checked(
 				(dom_html_input_element *)(mas->gadget.control->node),
 				mas->gadget.control->selected);
@@ -878,6 +879,7 @@ gadget_mouse_action(html_content *html,
 		mas->result.status = messages_get("FormRadio");
 		if (mouse & BROWSER_MOUSE_CLICK_1) {
 			form_radio_set(mas->gadget.control);
+			html_fire_change(mas->gadget.control);
 		}
 		break;
 
@@ -1399,9 +1401,26 @@ mouse_action_drag_none(html_content *html,
 		content_broadcast(c, CONTENT_MSG_POINTER, &msg_data);
 	}
 
-	/* fire dom click event */
-	if (mouse & BROWSER_MOUSE_CLICK_1) {
-		fire_generic_dom_event(corestring_dom_click, mas.node, true, true);
+	/* fire dom click event; a script calling preventDefault() cancels
+	 * the default action (following a link, submitting a form) */
+	if ((mouse & BROWSER_MOUSE_CLICK_1) && mas.node != NULL) {
+		if (!fire_generic_dom_event(corestring_dom_click, mas.node,
+				true, true) &&
+		    (mas.result.action == ACTION_NAVIGATE ||
+		     mas.result.action == ACTION_SUBMIT ||
+		     mas.result.action == ACTION_JS)) {
+			mas.result.action = ACTION_NONE;
+		}
+	}
+
+	/* a form's submit event can cancel submission */
+	if (mas.result.action == ACTION_SUBMIT &&
+	    mas.gadget.control != NULL &&
+	    mas.gadget.control->form != NULL &&
+	    mas.gadget.control->form->node != NULL &&
+	    !fire_generic_dom_event(corestring_dom_submit,
+			mas.gadget.control->form->node, true, true)) {
+		mas.result.action = ACTION_NONE;
 	}
 
 	/* deferred actions that can cause this browser_window to be destroyed
