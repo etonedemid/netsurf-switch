@@ -128,5 +128,7 @@ tr,                  TR
 tt,                  TT
 u,                   U
 ul,                  UL
+source, SOURCE
+track, TRACK
 wbr,                 WBR
 xmp,                 XMP

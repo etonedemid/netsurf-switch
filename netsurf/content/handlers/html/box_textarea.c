@@ -27,6 +27,7 @@
 #include "utils/config.h"
 #include "utils/log.h"
 #include "utils/messages.h"
+#include "utils/corestrings.h"
 #include "netsurf/keypress.h"
 #include "netsurf/misc.h"
 #include "desktop/textarea.h"
@@ -248,6 +249,9 @@ static void box_textarea_callback(void *data, struct textarea_msg *msg)
 		form_gadget_update_value(gadget,
 					 strndup(msg->data.modified.text,
 						 msg->data.modified.len));
+		if (gadget->node != NULL)
+			fire_generic_dom_event(corestring_dom_input,
+					gadget->node, true, false);
 		break;
 	}
 }
@@ -278,6 +282,12 @@ bool box_textarea_create_textarea(html_content *html,
 	assert(gadget->type == GADGET_TEXTAREA ||
 			gadget->type == GADGET_TEXTBOX ||
 			gadget->type == GADGET_PASSWORD);
+
+	if (gadget->data.text.ta != NULL) {
+		/* box tree rebuilt: keep the widget, with the user's text
+		 * and caret */
+		return true;
+	}
 
 	if (gadget->type == GADGET_TEXTAREA) {
 		dom_html_text_area_element *textarea =

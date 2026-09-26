@@ -50,6 +50,9 @@
 #include "html/box_manipulate.h"
 #include "html/box_construct.h"
 #include "html/box_special.h"
+#include "html/inline_svg.h"
+#include "html/media.h"
+#include "html/canvas.h"
 #include "html/box_textarea.h"
 #include "html/form_internal.h"
 
@@ -818,30 +821,6 @@ box_button(dom_node *n,
 }
 
 
-/**
- * Canvas element
- */
-static bool
-box_canvas(dom_node *n,
-	     html_content *content,
-	     struct box *box,
-	     bool *convert_children)
-{
-	/* If scripting is not enabled display the contents of canvas */
-	if (!content->enable_scripting) {
-		return true;
-	}
-	*convert_children = false;
-
-	if (box->style && ns_computed_display(box->style,
-			box_is_root(n)) == CSS_DISPLAY_NONE)
-		return true;
-
-	/* This is replaced content */
-	box->flags |= IS_REPLACED | REPLACE_DIM;
-
-	return true;
-}
 
 
 /**
@@ -1882,7 +1861,7 @@ convert_special_elements(dom_node *node,
 		break;
 
 	case DOM_HTML_ELEMENT_TYPE_CANVAS:
-		res = box_canvas(node, content, box, convert_children);
+		res = html_canvas_box(content, node, box, convert_children);
 		break;
 
 	case DOM_HTML_ELEMENT_TYPE_EMBED:
@@ -1925,8 +1904,17 @@ convert_special_elements(dom_node *node,
 		res = box_textarea(node, content, box, convert_children);
 		break;
 
+	case DOM_HTML_ELEMENT_TYPE_VIDEO:
+	case DOM_HTML_ELEMENT_TYPE_AUDIO:
+		res = html_media_box(content, node, box, convert_children);
+		break;
+
 	default:
-		res = true;
+		if (html_inline_svg_is_svg(node))
+			res = html_inline_svg_box(node, content, box,
+					convert_children);
+		else
+			res = true;
 	}
 
 	return res;

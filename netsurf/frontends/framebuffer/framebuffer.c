@@ -38,6 +38,7 @@
 #include "framebuffer/gui.h"
 #include "framebuffer/fbtk.h"
 #include "framebuffer/framebuffer.h"
+#include "framebuffer/fbfx.h"
 #include "framebuffer/font.h"
 #include "framebuffer/bitmap.h"
 
@@ -204,7 +205,19 @@ framebuffer_plot_rectangle(const struct redraw_context *ctx,
 	rect.y1 = nsrect->y1;
 
 	if (style->fill_type != PLOT_OP_TYPE_NONE) {
-		nsfb_plot_rectangle_fill(nsfb, &rect, style->fill_colour);
+		unsigned int a = 255 - ((style->fill_colour >> 24) & 0xff);
+		if (a == 0) {
+			/* fully transparent */
+		} else if (a < 255) {
+			/* translucent fills are blended */
+			struct plot_radii zero;
+			memset(&zero, 0, sizeof(zero));
+			fbfx_rounded_fill(ctx, nsrect, &zero, NULL, NULL,
+					style->fill_colour);
+		} else {
+			nsfb_plot_rectangle_fill(nsfb, &rect,
+					style->fill_colour);
+		}
 	}
 
 	if (style->stroke_type != PLOT_OP_TYPE_NONE) {
@@ -319,6 +332,9 @@ framebuffer_plot_bitmap(const struct redraw_context *ctx,
 	enum nsfb_format_e bmformat;
 	unsigned char *bmptr;
 	nsfb_t *bm = (nsfb_t *)bitmap;
+
+	if (fbfx_tint_bitmap(bm, x, y, width, height))
+		return NSERROR_OK;
 
 	/* x and y define coordinate of top left of of the initial explicitly
 	 * placed tile. The width and height are the image scaling and the
@@ -529,10 +545,17 @@ const struct plotter_table fb_plotters = {
 	.line = framebuffer_plot_line,
 	.rectangle = framebuffer_plot_rectangle,
 	.polygon = framebuffer_plot_polygon,
-	.path = framebuffer_plot_path,
+	.path = fbfx_path,
 	.bitmap = framebuffer_plot_bitmap,
 	.text = framebuffer_plot_text,
-	.option_knockout = true,
+	.rounded_fill = fbfx_rounded_fill,
+	.gradient = fbfx_gradient,
+	.shadow = fbfx_shadow,
+	.layer_begin = fbfx_layer_begin,
+	.layer_end = fbfx_layer_end,
+	.tint = fbfx_tint,
+	/* knockout would reorder plots across compositing layers */
+	.option_knockout = false,
 };
 
 
@@ -644,6 +667,11 @@ bool
 framebuffer_set_cursor(struct fbtk_bitmap *bm)
 {
     return nsfb_cursor_set(nsfb, (nsfb_colour_t *)bm->pixdata, bm->width, bm->height, bm->width, bm->hot_x, bm->hot_y);
+}
+
+nsfb_t *framebuffer_current_surface(void)
+{
+	return nsfb;
 }
 
 nsfb_t *framebuffer_set_surface(nsfb_t *new_nsfb)

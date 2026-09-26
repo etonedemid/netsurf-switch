@@ -210,6 +210,31 @@ typedef struct html_content {
 	 */
 	struct form_control *visible_select_menu;
 
+	/** The window load event has been dispatched */
+	bool load_fired;
+
+	/** A box tree rebuild is scheduled */
+	bool rebuild_pending;
+	/** Stylesheets changed since the selection context was made */
+	bool rebuild_styles_changed;
+	/** Earliest time for the next rebuild (rate limiting) */
+	uint64_t rebuild_next_ms;
+	/** Objects of the tree being replaced, for reuse by the new one */
+	struct content_html_object *rebuild_old_objects;
+
+	/** display: contents boxes (outside the tree, chained by next) */
+	struct box *contents_boxes;
+
+	/** media elements (<video>/<audio>) */
+	struct html_media *media_elements;
+
+	/** canvas elements */
+	struct html_canvas *canvases;
+
+	/** hashes of scoped shadow stylesheets already added */
+	uint32_t *shadow_css_hashes;
+	unsigned int shadow_css_count;
+
 } html_content;
 
 /**
@@ -235,6 +260,11 @@ void html__redraw_a_box(html_content *htmlc, struct box *box);
  * \param htmlc Content to convert
  */
 void html_finish_conversion(html_content *htmlc);
+
+/**
+ * Dispatch the window load event (once) after the page is done.
+ */
+void html_fire_load_event(html_content *htmlc);
 
 
 /**
@@ -336,6 +366,13 @@ nserror html_css_fetcher_add_item(dom_string *data, struct nsurl *base_url,
  * Construct an event and fire it at the DOM
  *
  */
+struct form_control;
+
+/**
+ * Fire input and change events at a form control after a user change.
+ */
+void html_fire_change(struct form_control *control);
+
 bool fire_generic_dom_event(dom_string *type, dom_node *target,
 		    bool bubbles, bool cancelable);
 

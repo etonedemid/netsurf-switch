@@ -63,6 +63,7 @@ typedef struct sdl2_priv_s {
     int pending_count;
 
     /* emulated pointer state for stick control */
+    bool present_pending; /* texture updated since the last present */
     float ptr_x;
     float ptr_y;
     uint32_t last_motion_ticks;
@@ -171,6 +172,7 @@ static enum nsfb_key_code_e sdl2_translate_key(SDL_Keycode sym)
 }
 
 static int sdl2_update(nsfb_t *nsfb, nsfb_bbox_t *box);
+static void sdl2_flush_present(sdl2_priv_t *priv);
 
 /* push the current emulated pointer position as a move event */
 static void sdl2_flush_pointer(nsfb_t *nsfb, sdl2_priv_t *priv)
@@ -222,8 +224,10 @@ static bool sdl2_pump_sticks(nsfb_t *nsfb, sdl2_priv_t *priv)
     }
 
     if (abs(lx) > STICK_DEADZONE || abs(ly) > STICK_DEADZONE) {
-        priv->ptr_x += (lx / 32767.0f) * STICK_CURSOR_PXPS * dt;
-        priv->ptr_y += (ly / 32767.0f) * STICK_CURSOR_PXPS * dt;
+        priv->ptr_x += (lx / 32767.0f) * STICK_CURSOR_PXPS * dt *
+            (nsfb->width / 1280.0f);
+        priv->ptr_y += (ly / 32767.0f) * STICK_CURSOR_PXPS * dt *
+            (nsfb->width / 1280.0f);
         priv->ptr_dirty = true;
         active = true;
     }
@@ -513,6 +517,9 @@ static bool sdl2_input(nsfb_t *nsfb, nsfb_event_t *event, int timeout)
     if (priv == NULL)
         return false;
 
+    /* show everything drawn since the last input poll */
+    sdl2_flush_present(priv);
+
     {
         static unsigned int calls;
         calls++;
@@ -599,7 +606,11 @@ static int sdl2_set_geometry(nsfb_t *nsfb, int width, int height,
             SDL_DestroyTexture(priv->texture);
         priv->texture = newtex;
 
+#ifndef __SWITCH__
         SDL_SetWindowSize(priv->window, width, height);
+#endif
+        /* on the Switch the window keeps the console's output size and
+         * the renderer scales the backing texture to fit */
 
         nsfb->ptr = priv->fb;
         nsfb->linelen = priv->fb_pitch;
@@ -614,6 +625,8 @@ static int sdl2_initialise(nsfb_t *nsfb)
 
     if (nsfb->surface_priv != NULL)
         return -1;
+
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER |
                  SDL_INIT_GAMECONTROLLER) < 0) {
@@ -746,10 +759,21 @@ static int sdl2_present(nsfb_t *nsfb, const nsfb_bbox_t *box)
                           (size_t)rect.x * 4,
                       priv->fb_pitch);
 
-    SDL_RenderCopy(priv->renderer, priv->texture, NULL, NULL);
-    SDL_RenderPresent(priv->renderer);
+    /* the GPU copy and flip happen once per main loop iteration, however
+     * many regions were updated (see sdl2_flush_present) */
+    priv->present_pending = true;
 
     return 0;
+}
+
+static void sdl2_flush_present(sdl2_priv_t *priv)
+{
+    if (priv == NULL || !priv->present_pending || priv->texture == NULL)
+        return;
+    priv->present_pending = false;
+    SDL_RenderClear(priv->renderer);
+    SDL_RenderCopy(priv->renderer, priv->texture, NULL, NULL);
+    SDL_RenderPresent(priv->renderer);
 }
 
 static int sdl2_cursor(nsfb_t *nsfb, struct nsfb_cursor_s *cursor)

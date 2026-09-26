@@ -91,9 +91,15 @@ html_object_failed(struct box *box, html_content *content, bool background)
 static void
 html_object_done(struct box *box,
 		 hlcache_handle *object,
-		 bool background)
+		 bool background,
+		 bool mask)
 {
 	struct box *b;
+
+	if (mask) {
+		box->mask = object;
+		return;
+	}
 
 	if (background) {
 		box->background = object;
@@ -184,7 +190,7 @@ html_object_callback(hlcache_handle *object,
 							box->height : 0);
 
 			/* Adjust parent content for new object size */
-			html_object_done(box, object, o->background);
+			html_object_done(box, object, o->background, o->mask);
 			if (c->base.status == CONTENT_STATUS_READY ||
 					c->base.status == CONTENT_STATUS_DONE)
 				content__reformat(&c->base, false,
@@ -197,7 +203,7 @@ html_object_callback(hlcache_handle *object,
 		c->base.active--;
 		NSLOG(netsurf, INFO, "%d fetches active", c->base.active);
 
-		html_object_done(box, object, o->background);
+		html_object_done(box, object, o->background, o->mask);
 
 		if (c->base.status != CONTENT_STATUS_LOADING &&
 				box->flags & REPLACE_DIM) {
@@ -482,6 +488,7 @@ html_object_callback(hlcache_handle *object,
 		content__reformat(&c->base, false, c->base.available_width,
 				c->base.available_height);
 		content_set_done(&c->base);
+		html_fire_load_event(c);
 	} else if (nsoption_bool(incremental_reflow) &&
 		   event->type == CONTENT_MSG_DONE &&
 		   box != NULL &&
@@ -705,13 +712,13 @@ nserror html_object_free_objects(html_content *html)
 }
 
 
-/* exported interface documented in html/object.h */
-bool
-html_fetch_object(html_content *c,
+static bool
+html__fetch_object(html_content *c,
 		  nsurl *url,
 		  struct box *box,
 		  content_type permitted_types,
-		  bool background)
+		  bool background,
+		  bool mask)
 {
 	struct content_html_object *object;
 	hlcache_handle_callback object_callback;
@@ -721,6 +728,39 @@ html_fetch_object(html_content *c,
 	/* If we've already been aborted, don't bother attempting the fetch */
 	if (c->aborted)
 		return true;
+
+	/* During a box tree rebuild, reuse the object the old tree had for
+	 * this node, so images need not be fetched and converted again. */
+	if (box != NULL && box->node != NULL) {
+		struct content_html_object **prev = &c->rebuild_old_objects;
+		for (object = c->rebuild_old_objects; object != NULL;
+				prev = &object->next, object = object->next) {
+			bool match = false;
+			if (object->box == NULL || object->content == NULL ||
+			    object->box->node != box->node ||
+			    object->background != background ||
+			    object->mask != mask)
+				continue;
+			if (content_get_type(object->content) == CONTENT_HTML)
+				continue;
+			match = nsurl_compare(hlcache_handle_get_url(
+					object->content), url, NSURL_COMPLETE);
+			if (!match) {
+				continue;
+			}
+			*prev = object->next;
+			object->box = box;
+			object->next = c->object_list;
+			c->object_list = object;
+			c->num_objects++;
+			if (content_get_status(object->content) ==
+					CONTENT_STATUS_DONE) {
+				html_object_done(box, object->content,
+						background, mask);
+			}
+			return true;
+		}
+	}
 
 	child.charset = c->encoding;
 	child.quirks = c->base.quirks;
@@ -742,6 +782,7 @@ html_fetch_object(html_content *c,
 	object->box = box;
 	object->permitted_types = permitted_types;
 	object->background = background;
+	object->mask = mask;
 
 	error = hlcache_handle_retrieve(url,
 					HLCACHE_RETRIEVE_SNIFF_TYPE,
@@ -768,4 +809,24 @@ html_fetch_object(html_content *c,
 	}
 
 	return true;
+}
+
+
+/* exported interface documented in html/object.h */
+bool
+html_fetch_object(html_content *c,
+		  nsurl *url,
+		  struct box *box,
+		  content_type permitted_types,
+		  bool background)
+{
+	return html__fetch_object(c, url, box, permitted_types, background,
+			false);
+}
+
+
+/* exported interface documented in html/object.h */
+bool html_fetch_mask_object(html_content *c, nsurl *url, struct box *box)
+{
+	return html__fetch_object(c, url, box, CONTENT_IMAGE, false, true);
 }

@@ -209,6 +209,10 @@ struct css_stylesheet {
 
 	css_style *cached_style;		/**< Cache for style parsing */
 
+	uint8_t *pp_data;			/**< Buffered source text */
+	size_t pp_len;				/**< Length of buffered text */
+	size_t pp_cap;				/**< Capacity of pp_data */
+
 	lwc_string **string_vector;             /**< Bytecode string vector */
 	uint32_t string_vector_l;               /**< The string vector allocated
 						 * length in entries */

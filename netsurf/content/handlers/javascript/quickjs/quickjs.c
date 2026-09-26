@@ -36,6 +36,7 @@
 #include "content/content.h"
 
 #include "javascript/js.h"
+#include "javascript/content.h"
 #include "javascript/quickjs/qjs_private.h"
 
 #include <nsutils/time.h>
@@ -110,6 +111,10 @@ static void qjs_setup_console(JSContext *ctx)
 /* exported interface documented in js.h */
 void js_initialise(void)
 {
+	/* register the javascript content handler so page scripts are
+	 * recognised and fetched */
+	javascript_init();
+
 	NSLOG(netsurf, INFO,
 	      "QuickJS backend initialised (core DOM bindings)");
 }
@@ -135,8 +140,11 @@ nserror js_newheap(int timeout, jsheap **heap_out)
 	}
 
 	JS_SetMemoryLimit(heap->rt, QJS_MEMORY_LIMIT);
+	if (getenv("NS_JS_LEAKS") != NULL)
+		JS_SetDumpFlags(heap->rt, JS_DUMP_LEAKS);
 	JS_SetInterruptHandler(heap->rt, qjs_interrupt_handler, heap);
 	JS_SetRuntimeOpaque(heap->rt, heap);
+	qjs_modules_setup(heap->rt);
 	heap->timeout_s = timeout;
 
 	*heap_out = heap;
@@ -148,6 +156,13 @@ void js_destroyheap(jsheap *heap)
 {
 	if (heap == NULL)
 		return;
+	if (heap->nthreads > 0) {
+		/* page contexts can outlive their window (the content is
+		 * still cached); free the runtime with the last of them */
+		heap->dying = true;
+		return;
+	}
+	JS_RunGC(heap->rt);
 	JS_FreeRuntime(heap->rt);
 	free(heap);
 }
@@ -172,6 +187,7 @@ js_newthread(jsheap *heap, void *win_priv, void *doc_priv, jsthread **out)
 	}
 
 	thread->heap = heap;
+	heap->nthreads++;
 	thread->bw = win_priv;
 	thread->htmlc = doc_priv;
 
@@ -188,6 +204,7 @@ nserror js_closethread(jsthread *thread)
 	if (thread == NULL)
 		return NSERROR_OK;
 	thread->closed = true;
+	qjs_modules_closethread(thread);
 	qjs_dom_closethread(thread);
 	return NSERROR_OK;
 }
@@ -197,10 +214,88 @@ void js_destroythread(jsthread *thread)
 {
 	if (thread == NULL)
 		return;
+	jsheap *heap;
+
 	thread->closed = true;
+	heap = thread->heap;
+	qjs_modules_closethread(thread);
 	qjs_dom_teardown(thread);
 	JS_FreeContext(thread->ctx);
 	free(thread);
+
+	if (--heap->nthreads == 0 && heap->dying) {
+		heap->nthreads = 0;
+		heap->dying = false;
+		js_destroyheap(heap);
+	}
+}
+
+/**
+ * Copy script source into a NUL terminated UTF-8 buffer.
+ *
+ * Invalid UTF-8 is taken to be Windows-1252/Latin-1 and converted.
+ */
+static char *qjs_source_utf8(const uint8_t *txt, size_t len, size_t *outlen)
+{
+	size_t i = 0, o = 0;
+	bool valid = true;
+	char *out;
+
+	/* skip a UTF-8 byte order mark */
+	if (len >= 3 && txt[0] == 0xef && txt[1] == 0xbb && txt[2] == 0xbf) {
+		txt += 3;
+		len -= 3;
+	}
+
+	while (i < len) {
+		uint8_t c = txt[i];
+		size_t n;
+		if (c < 0x80) {
+			i++;
+			continue;
+		}
+		n = (c & 0xe0) == 0xc0 ? 2 : (c & 0xf0) == 0xe0 ? 3 :
+			(c & 0xf8) == 0xf0 ? 4 : 0;
+		if (n == 0 || i + n > len) {
+			valid = false;
+			break;
+		}
+		for (size_t k = 1; k < n; k++) {
+			if ((txt[i + k] & 0xc0) != 0x80) {
+				valid = false;
+				break;
+			}
+		}
+		if (!valid)
+			break;
+		i += n;
+	}
+
+	if (valid) {
+		out = malloc(len + 1);
+		if (out == NULL)
+			return NULL;
+		memcpy(out, txt, len);
+		out[len] = '\0';
+		*outlen = len;
+		return out;
+	}
+
+	out = malloc(len * 2 + 1);
+	if (out == NULL)
+		return NULL;
+	for (i = 0; i < len; i++) {
+		uint8_t c = txt[i];
+		if (c < 0x80) {
+			out[o++] = c;
+		} else {
+			out[o++] = 0xc0 | (c >> 6);
+			out[o++] = 0x80 | (c & 0x3f);
+		}
+	}
+	out[o] = '\0';
+	*outlen = o;
+	return out;
 }
 
 /* exported interface documented in js.h */
@@ -209,16 +304,24 @@ bool js_exec(jsthread *thread, const uint8_t *txt, size_t txtlen,
 {
 	JSValue v;
 	bool ok = true;
+	char *buf;
+	size_t buflen;
 
 	if (thread == NULL || thread->closed || txt == NULL || txtlen == 0)
 		return false;
 
+	/* QuickJS needs NUL terminated UTF-8 source */
+	buf = qjs_source_utf8(txt, txtlen, &buflen);
+	if (buf == NULL)
+		return false;
+
 	qjs_deadline_start(thread);
 
-	v = JS_Eval(thread->ctx, (const char *)txt, txtlen,
+	v = JS_Eval(thread->ctx, buf, buflen,
 		    name ? name : "<script>", JS_EVAL_TYPE_GLOBAL);
 
 	qjs_deadline_stop(thread);
+	free(buf);
 
 	if (JS_IsException(v)) {
 		qjs_dump_error(thread->ctx);

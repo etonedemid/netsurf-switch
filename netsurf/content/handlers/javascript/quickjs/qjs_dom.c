@@ -43,6 +43,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #include <dom/dom.h>
 
@@ -55,9 +56,13 @@
 #include "netsurf/misc.h"
 #include "desktop/gui_internal.h"
 #include "html/private.h"
+#include "html/media.h"
 
 #include "javascript/js.h"
 #include "javascript/quickjs/qjs_private.h"
+
+/* runtime.js, embedded at build time */
+#include "quickjs/runtime.js.inc"
 
 /* property names used for the JS-side bookkeeping */
 #define NSPROP_LISTENERS "__ns_listeners"
@@ -71,6 +76,8 @@ struct qjs_timer {
 	char *src;      /* string form of setTimeout */
 	int32_t ms;
 	bool repeat;
+	bool firing;    /* callback running: defer freeing */
+	bool cancelled; /* cleared while firing */
 	uint32_t id;
 };
 
@@ -124,6 +131,12 @@ static dom_node *qjs_this_node(JSContext *ctx, JSValueConst this_val)
 	return JS_GetOpaque(this_val, t->heap->node_class);
 }
 
+/* exported interface documented in qjs_private.h */
+struct dom_node *qjs_dom_node_of(JSContext *ctx, JSValueConst v)
+{
+	return qjs_this_node(ctx, v);
+}
+
 static dom_event *qjs_this_event(JSContext *ctx, JSValueConst this_val)
 {
 	struct jsthread *t = qjs_thread(ctx);
@@ -138,9 +151,22 @@ void qjs_dump_error(JSContext *ctx)
 	JSValue exc = JS_GetException(ctx);
 	const char *msg = JS_ToCString(ctx, exc);
 
-	NSLOG(jserrors, WARNING, "Uncaught error in JS: %s",
-	      msg ? msg : "(unprintable)");
+	const char *stack = NULL;
+	JSValue sv = JS_UNDEFINED;
 
+	if (JS_IsObject(exc)) {
+		sv = JS_GetPropertyStr(ctx, exc, "stack");
+		if (JS_IsString(sv))
+			stack = JS_ToCString(ctx, sv);
+	}
+
+	NSLOG(jserrors, WARNING, "Uncaught error in JS: %s%s%.300s",
+	      msg ? msg : "(unprintable)", stack ? " at " : "",
+	      stack ? stack : "");
+
+	if (stack != NULL)
+		JS_FreeCString(ctx, stack);
+	JS_FreeValue(ctx, sv);
 	if (msg != NULL)
 		JS_FreeCString(ctx, msg);
 	JS_FreeValue(ctx, exc);
@@ -1405,14 +1431,8 @@ static const JSCFunctionListEntry qjs_element_funcs[] = {
 /* ------------------------------------------------------------------ */
 /* HTMLMediaElement (<audio>/<video>) and Audio()                     */
 /*                                                                    */
-/* NetSurf has no media element rendering, so these are a thin shim:  */
-/* play() hands the resolved src to the browser as a navigation,      */
-/* which NetSurf routes to its download path, where the Switch        */
-/* frontend's media intercept plays it fullscreen (spooling https to  */
-/* the SD first).  The other members are enough state for typical     */
-/* player scripts (paused/volume/currentTime) not to throw before     */
-/* they reach play().  Playback itself is fire-and-forget: NetSurf's  */
-/* player is modal, so timeupdate/ended events are not delivered.     */
+/* Backed by html/media.c: inline playback through the frontend's   */
+/* media table, with HTMLMediaElement events fired on the node.       */
 /* ------------------------------------------------------------------ */
 
 static bool qjs_node_is_media(dom_node *node)
@@ -1468,30 +1488,51 @@ static JSValue qjs_resolved_promise(JSContext *ctx)
 	return promise;
 }
 
+/* the element's media state (created on demand, e.g. new Audio()) */
+static struct html_media *qjs_media(JSContext *ctx, JSValueConst this_val)
+{
+	struct jsthread *t = qjs_thread(ctx);
+	dom_node *node = qjs_this_node(ctx, this_val);
+
+	if (t == NULL || node == NULL || t->closed || t->htmlc == NULL)
+		return NULL;
+	return html_media_for_node(t->htmlc, node, true);
+}
+
+static JSValue qjs_rejected_promise(JSContext *ctx, const char *msg)
+{
+	JSValue funcs[2];
+	JSValue promise = JS_NewPromiseCapability(ctx, funcs);
+	JSValue err, r;
+
+	if (JS_IsException(promise))
+		return JS_UNDEFINED;
+	err = JS_NewError(ctx);
+	JS_SetPropertyStr(ctx, err, "name",
+			JS_NewString(ctx, "NotSupportedError"));
+	JS_SetPropertyStr(ctx, err, "message", JS_NewString(ctx, msg));
+	r = JS_Call(ctx, funcs[1], JS_UNDEFINED, 1, &err);
+	JS_FreeValue(ctx, r);
+	JS_FreeValue(ctx, err);
+	JS_FreeValue(ctx, funcs[0]);
+	JS_FreeValue(ctx, funcs[1]);
+	return promise;
+}
+
 static JSValue
 media_play(JSContext *ctx, JSValueConst this_val,
 	   int argc, JSValueConst *argv)
 {
-	struct jsthread *t = qjs_thread(ctx);
-	dom_node *node = qjs_this_node(ctx, this_val);
-	nsurl *url;
+	struct html_media *m = qjs_media(ctx, this_val);
+	struct html_media_state st;
 
-	if (t == NULL || node == NULL || t->closed)
+	if (m == NULL)
 		return qjs_resolved_promise(ctx);
-
-	url = qjs_media_src_url(t, node);
-	if (url != NULL) {
-		NSLOG(netsurf, INFO, "media play(): %s", nsurl_access(url));
-		/* NetSurf's download intercept plays it; the frontend
-		 * defers the actual player launch off this call stack */
-		browser_window_navigate(t->bw, url, NULL,
-					BW_NAVIGATE_DOWNLOAD, NULL, NULL,
-					NULL);
-		nsurl_unref(url);
-		JS_SetPropertyStr(ctx, this_val, "__ns_paused", JS_FALSE);
-	} else {
-		NSLOG(netsurf, INFO, "media play(): no src");
-	}
+	html_media_play(m);
+	html_media_get_state(m, &st);
+	if (st.error || st.src == NULL)
+		return qjs_rejected_promise(ctx,
+				"The element has no supported sources.");
 	return qjs_resolved_promise(ctx);
 }
 
@@ -1499,8 +1540,10 @@ static JSValue
 media_pause(JSContext *ctx, JSValueConst this_val,
 	    int argc, JSValueConst *argv)
 {
-	/* the modal player is exited with B/Plus, not from script */
-	JS_SetPropertyStr(ctx, this_val, "__ns_paused", JS_TRUE);
+	struct html_media *m = qjs_media(ctx, this_val);
+
+	if (m != NULL)
+		html_media_pause(m);
 	return JS_UNDEFINED;
 }
 
@@ -1508,6 +1551,10 @@ static JSValue
 media_load(JSContext *ctx, JSValueConst this_val,
 	   int argc, JSValueConst *argv)
 {
+	struct html_media *m = qjs_media(ctx, this_val);
+
+	if (m != NULL)
+		html_media_load(m);
 	return JS_UNDEFINED;
 }
 
@@ -1516,20 +1563,33 @@ media_canPlayType(JSContext *ctx, JSValueConst this_val,
 		  int argc, JSValueConst *argv)
 {
 	const char *type;
-	JSValue ret;
+	const char *r = "";
 
 	if (argc < 1)
 		return JS_NewString(ctx, "");
 	type = JS_ToCString(ctx, argv[0]);
 	if (type == NULL)
 		return JS_NewString(ctx, "");
-	/* ffmpeg-backed player is broad; claim "maybe" for audio/video */
-	ret = JS_NewString(ctx,
-			   (strncmp(type, "audio/", 6) == 0 ||
-			    strncmp(type, "video/", 6) == 0) ?
-				   "maybe" : "");
+	if (strcasestr(type, "mpegurl") != NULL ||
+	    strcasestr(type, "dash") != NULL) {
+		r = "";
+	} else if (strncasecmp(type, "video/mp4", 9) == 0 ||
+		   strncasecmp(type, "video/webm", 10) == 0 ||
+		   strncasecmp(type, "audio/mpeg", 10) == 0 ||
+		   strncasecmp(type, "audio/mp4", 9) == 0 ||
+		   strncasecmp(type, "audio/ogg", 9) == 0 ||
+		   strncasecmp(type, "audio/webm", 10) == 0 ||
+		   strncasecmp(type, "audio/wav", 9) == 0 ||
+		   strncasecmp(type, "audio/aac", 9) == 0 ||
+		   strncasecmp(type, "audio/flac", 10) == 0 ||
+		   strncasecmp(type, "video/ogg", 9) == 0) {
+		r = "probably";
+	} else if (strncasecmp(type, "audio/", 6) == 0 ||
+		   strncasecmp(type, "video/", 6) == 0) {
+		r = "maybe";
+	}
 	JS_FreeCString(ctx, type);
-	return ret;
+	return JS_NewString(ctx, r);
 }
 
 static JSValue
@@ -1553,72 +1613,152 @@ media_get_src(JSContext *ctx, JSValueConst this_val)
 static JSValue
 media_set_src(JSContext *ctx, JSValueConst this_val, JSValueConst v)
 {
-	return qjs_attr_set(ctx, this_val, corestring_dom_src, v);
+	JSValue r = qjs_attr_set(ctx, this_val, corestring_dom_src, v);
+	struct html_media *m = qjs_media(ctx, this_val);
+
+	if (m != NULL)
+		html_media_load(m);
+	return r;
 }
 
 static JSValue
-media_get_paused(JSContext *ctx, JSValueConst this_val)
+media_get_currentSrc(JSContext *ctx, JSValueConst this_val)
 {
-	JSValue p = JS_GetPropertyStr(ctx, this_val, "__ns_paused");
+	struct html_media *m = qjs_media(ctx, this_val);
+	struct html_media_state st;
 
-	if (JS_IsUndefined(p)) {
-		JS_FreeValue(ctx, p);
-		return JS_TRUE; /* default state is paused */
-	}
-	return p;
+	if (m == NULL)
+		return JS_NewString(ctx, "");
+	html_media_get_state(m, &st);
+	return JS_NewString(ctx, st.src ? st.src : "");
 }
 
-/* simple JS-backed scalar property with a default */
-#define MEDIA_STORED_PROP(getname, setname, storekey, defexpr)		\
-static JSValue								\
-getname(JSContext *ctx, JSValueConst this_val)				\
+#define MEDIA_GETTER(fname, expr, dflt)					\
+static JSValue fname(JSContext *ctx, JSValueConst this_val)		\
 {									\
-	JSValue v = JS_GetPropertyStr(ctx, this_val, storekey);		\
-	if (JS_IsUndefined(v)) {					\
-		JS_FreeValue(ctx, v);					\
-		return (defexpr);					\
-	}								\
-	return v;							\
-}									\
-static JSValue								\
-setname(JSContext *ctx, JSValueConst this_val, JSValueConst v)		\
-{									\
-	JS_SetPropertyStr(ctx, this_val, storekey, JS_DupValue(ctx, v));	\
-	return JS_UNDEFINED;						\
+	struct html_media *m = qjs_media(ctx, this_val);		\
+	struct html_media_state st;					\
+	if (m == NULL)							\
+		return (dflt);						\
+	html_media_get_state(m, &st);					\
+	return (expr);							\
 }
 
-MEDIA_STORED_PROP(media_get_volume, media_set_volume, "__ns_volume",
-		  JS_NewFloat64(ctx, 1.0))
-MEDIA_STORED_PROP(media_get_currentTime, media_set_currentTime,
-		  "__ns_curtime", JS_NewFloat64(ctx, 0.0))
-MEDIA_STORED_PROP(media_get_muted, media_set_muted, "__ns_muted",
-		  JS_FALSE)
-MEDIA_STORED_PROP(media_get_loop, media_set_loop, "__ns_loop", JS_FALSE)
-MEDIA_STORED_PROP(media_get_autoplay, media_set_autoplay, "__ns_autoplay",
-		  JS_FALSE)
+MEDIA_GETTER(media_get_paused, JS_NewBool(ctx, st.paused), JS_TRUE)
+MEDIA_GETTER(media_get_ended, JS_NewBool(ctx, st.ended), JS_FALSE)
+MEDIA_GETTER(media_get_muted, JS_NewBool(ctx, st.muted), JS_FALSE)
+MEDIA_GETTER(media_get_loop, JS_NewBool(ctx, st.loop), JS_FALSE)
+MEDIA_GETTER(media_get_volume, JS_NewFloat64(ctx, st.volume),
+		JS_NewFloat64(ctx, 1))
+MEDIA_GETTER(media_get_currentTime, JS_NewFloat64(ctx, st.current_time),
+		JS_NewFloat64(ctx, 0))
+MEDIA_GETTER(media_get_duration, JS_NewFloat64(ctx, st.duration),
+		JS_NewFloat64(ctx, NAN))
+MEDIA_GETTER(media_get_readyState, JS_NewInt32(ctx, st.ready_state),
+		JS_NewInt32(ctx, 0))
+MEDIA_GETTER(media_get_networkState, JS_NewInt32(ctx, st.network_state),
+		JS_NewInt32(ctx, 0))
+MEDIA_GETTER(media_get_videoWidth, JS_NewInt32(ctx, st.video_width),
+		JS_NewInt32(ctx, 0))
+MEDIA_GETTER(media_get_videoHeight, JS_NewInt32(ctx, st.video_height),
+		JS_NewInt32(ctx, 0))
 
 static JSValue
-media_get_duration(JSContext *ctx, JSValueConst this_val)
+media_get_error(JSContext *ctx, JSValueConst this_val)
 {
-	return JS_NewFloat64(ctx, 0.0); /* unknown; NaN upsets some scripts */
+	struct html_media *m = qjs_media(ctx, this_val);
+	struct html_media_state st;
+	JSValue e;
+
+	if (m == NULL)
+		return JS_NULL;
+	html_media_get_state(m, &st);
+	if (!st.error)
+		return JS_NULL;
+	e = JS_NewObject(ctx);
+	JS_SetPropertyStr(ctx, e, "code", JS_NewInt32(ctx, 4));
+	JS_SetPropertyStr(ctx, e, "message",
+			JS_NewString(ctx, "MEDIA_ERR_SRC_NOT_SUPPORTED"));
+	return e;
 }
 
 static JSValue
-media_get_ended(JSContext *ctx, JSValueConst this_val)
+media_set_currentTime(JSContext *ctx, JSValueConst this_val, JSValueConst v)
 {
-	return JS_FALSE;
+	struct html_media *m = qjs_media(ctx, this_val);
+	double t = 0;
+
+	if (m != NULL && JS_ToFloat64(ctx, &t, v) == 0 && isfinite(t))
+		html_media_seek(m, t);
+	return JS_UNDEFINED;
 }
 
 static JSValue
-media_get_readyState(JSContext *ctx, JSValueConst this_val)
+media_set_volume(JSContext *ctx, JSValueConst this_val, JSValueConst v)
 {
-	return JS_NewInt32(ctx, 4); /* HAVE_ENOUGH_DATA */
+	struct html_media *m = qjs_media(ctx, this_val);
+	struct html_media_state st;
+	double vol = 1;
+
+	if (m == NULL || JS_ToFloat64(ctx, &vol, v) != 0)
+		return JS_UNDEFINED;
+	if (!(vol >= 0 && vol <= 1))
+		return JS_ThrowRangeError(ctx, "volume out of range");
+	html_media_get_state(m, &st);
+	html_media_set_volume(m, vol, st.muted);
+	return JS_UNDEFINED;
 }
 
 static JSValue
-media_get_networkState(JSContext *ctx, JSValueConst this_val)
+media_set_muted(JSContext *ctx, JSValueConst this_val, JSValueConst v)
 {
-	return JS_NewInt32(ctx, 1); /* NETWORK_IDLE */
+	struct html_media *m = qjs_media(ctx, this_val);
+	struct html_media_state st;
+
+	if (m == NULL)
+		return JS_UNDEFINED;
+	html_media_get_state(m, &st);
+	html_media_set_volume(m, st.volume, JS_ToBool(ctx, v));
+	return JS_UNDEFINED;
+}
+
+static JSValue
+media_set_loop(JSContext *ctx, JSValueConst this_val, JSValueConst v)
+{
+	struct html_media *m = qjs_media(ctx, this_val);
+
+	if (m != NULL)
+		html_media_set_loop(m, JS_ToBool(ctx, v));
+	return JS_UNDEFINED;
+}
+
+static JSValue
+media_get_autoplay(JSContext *ctx, JSValueConst this_val)
+{
+	JSValue v = JS_GetPropertyStr(ctx, this_val, "__ns_autoplay");
+	if (JS_IsUndefined(v))
+		return JS_FALSE;
+	return v;
+}
+
+static JSValue
+media_set_autoplay(JSContext *ctx, JSValueConst this_val, JSValueConst v)
+{
+	JS_SetPropertyStr(ctx, this_val, "__ns_autoplay",
+			JS_NewBool(ctx, JS_ToBool(ctx, v)));
+	return JS_UNDEFINED;
+}
+
+static JSValue
+media_get_playbackRate(JSContext *ctx, JSValueConst this_val)
+{
+	return JS_NewFloat64(ctx, 1.0);
+}
+
+static JSValue
+media_set_playbackRate(JSContext *ctx, JSValueConst this_val, JSValueConst v)
+{
+	return JS_UNDEFINED; /* only normal speed is supported */
 }
 
 static const JSCFunctionListEntry qjs_media_funcs[] = {
@@ -1627,7 +1767,7 @@ static const JSCFunctionListEntry qjs_media_funcs[] = {
 	JS_CFUNC_DEF("load", 0, media_load),
 	JS_CFUNC_DEF("canPlayType", 1, media_canPlayType),
 	JS_CGETSET_DEF("src", media_get_src, media_set_src),
-	JS_CGETSET_DEF("currentSrc", media_get_src, NULL),
+	JS_CGETSET_DEF("currentSrc", media_get_currentSrc, NULL),
 	JS_CGETSET_DEF("paused", media_get_paused, NULL),
 	JS_CGETSET_DEF("volume", media_get_volume, media_set_volume),
 	JS_CGETSET_DEF("currentTime", media_get_currentTime,
@@ -1639,6 +1779,13 @@ static const JSCFunctionListEntry qjs_media_funcs[] = {
 	JS_CGETSET_DEF("ended", media_get_ended, NULL),
 	JS_CGETSET_DEF("readyState", media_get_readyState, NULL),
 	JS_CGETSET_DEF("networkState", media_get_networkState, NULL),
+	JS_CGETSET_DEF("videoWidth", media_get_videoWidth, NULL),
+	JS_CGETSET_DEF("videoHeight", media_get_videoHeight, NULL),
+	JS_CGETSET_DEF("error", media_get_error, NULL),
+	JS_CGETSET_DEF("playbackRate", media_get_playbackRate,
+		       media_set_playbackRate),
+	JS_CGETSET_DEF("defaultPlaybackRate", media_get_playbackRate,
+		       media_set_playbackRate),
 };
 
 /* ------------------------------------------------------------------ */
@@ -1811,7 +1958,9 @@ doc_get_URL(JSContext *ctx, JSValueConst this_val)
 static JSValue
 doc_get_readyState(JSContext *ctx, JSValueConst this_val)
 {
-	return JS_NewString(ctx, "complete");
+	struct jsthread *t = qjs_thread(ctx);
+	static const char *states[] = { "loading", "interactive", "complete" };
+	return JS_NewString(ctx, states[t != NULL ? t->ready_state % 3 : 2]);
 }
 
 static JSValue
@@ -2042,6 +2191,44 @@ event_get_type(JSContext *ctx, JSValueConst this_val)
 	return ret;
 }
 
+#define EVENT_BOOL_GETTER(fname, domfn)					\
+static JSValue								\
+fname(JSContext *ctx, JSValueConst this_val)				\
+{									\
+	dom_event *evt = qjs_this_event(ctx, this_val);			\
+	bool v = false;							\
+	if (evt == NULL)						\
+		return JS_FALSE;					\
+	domfn(evt, &v);							\
+	return JS_NewBool(ctx, v);					\
+}
+EVENT_BOOL_GETTER(event_get_bubbles, dom_event_get_bubbles)
+EVENT_BOOL_GETTER(event_get_cancelable, dom_event_get_cancelable)
+EVENT_BOOL_GETTER(event_get_defaultPrevented, dom_event_is_default_prevented)
+EVENT_BOOL_GETTER(event_get_isTrusted, dom_event_get_is_trusted)
+
+static JSValue
+event_get_eventPhase(JSContext *ctx, JSValueConst this_val)
+{
+	dom_event *evt = qjs_this_event(ctx, this_val);
+	dom_event_flow_phase phase = 0;
+	if (evt == NULL)
+		return JS_NewInt32(ctx, 0);
+	dom_event_get_event_phase(evt, &phase);
+	return JS_NewInt32(ctx, (int32_t)phase);
+}
+
+static JSValue
+event_get_timeStamp(JSContext *ctx, JSValueConst this_val)
+{
+	dom_event *evt = qjs_this_event(ctx, this_val);
+	unsigned int ts = 0;
+	if (evt == NULL)
+		return JS_NewInt32(ctx, 0);
+	dom_event_get_timestamp(evt, &ts);
+	return JS_NewFloat64(ctx, (double)ts);
+}
+
 static JSValue
 event_get_target(JSContext *ctx, JSValueConst this_val)
 {
@@ -2131,6 +2318,12 @@ event_initEvent(JSContext *ctx, JSValueConst this_val,
 static const JSCFunctionListEntry qjs_event_funcs[] = {
 	JS_CGETSET_DEF("type", event_get_type, NULL),
 	JS_CGETSET_DEF("target", event_get_target, NULL),
+	JS_CGETSET_DEF("bubbles", event_get_bubbles, NULL),
+	JS_CGETSET_DEF("cancelable", event_get_cancelable, NULL),
+	JS_CGETSET_DEF("defaultPrevented", event_get_defaultPrevented, NULL),
+	JS_CGETSET_DEF("isTrusted", event_get_isTrusted, NULL),
+	JS_CGETSET_DEF("eventPhase", event_get_eventPhase, NULL),
+	JS_CGETSET_DEF("timeStamp", event_get_timeStamp, NULL),
 	JS_CGETSET_DEF("currentTarget", event_get_currentTarget, NULL),
 	JS_CFUNC_DEF("preventDefault", 0, event_preventDefault),
 	JS_CFUNC_DEF("stopPropagation", 0, event_stopPropagation),
@@ -2334,6 +2527,7 @@ static void qjs_timer_fire(void *p)
 		return;
 	}
 
+	tm->firing = true;
 	qjs_deadline_start(t);
 	if (!JS_IsUndefined(tm->func)) {
 		JSValue global = JS_GetGlobalObject(ctx);
@@ -2353,8 +2547,9 @@ static void qjs_timer_fire(void *p)
 	}
 	qjs_deadline_stop(t);
 	qjs_run_jobs(ctx);
+	tm->firing = false;
 
-	if (tm->repeat && !t->closed) {
+	if (tm->repeat && !t->closed && !tm->cancelled) {
 		guit->misc->schedule(tm->ms, qjs_timer_fire, tm);
 	} else {
 		qjs_timer_free(tm);
@@ -2416,6 +2611,11 @@ qjs_cleartimer(JSContext *ctx, JSValueConst this_val,
 
 	for (tm = t->timers; tm != NULL; tm = tm->next) {
 		if (tm->id == (uint32_t)id) {
+			if (tm->firing) {
+				/* freed when its callback returns */
+				tm->cancelled = true;
+				break;
+			}
 			guit->misc->schedule(-1, qjs_timer_fire, tm);
 			qjs_timer_free(tm);
 			break;
@@ -2518,11 +2718,13 @@ qjs_event_ctor(JSContext *ctx, JSValueConst new_target,
 static const char qjs_setup_script[] =
 "(function(){\n"
 "  globalThis.__ns_addl = function(o, t, f) {\n"
+"    if (o == null) o = globalThis;\n"
 "    var m = o.__ns_listeners || (o.__ns_listeners = {});\n"
 "    var a = m[t] || (m[t] = []);\n"
 "    if (a.indexOf(f) < 0) a.push(f);\n"
 "  };\n"
 "  globalThis.__ns_reml = function(o, t, f) {\n"
+"    if (o == null) o = globalThis;\n"
 "    var m = o.__ns_listeners; if (!m) return;\n"
 "    var a = m[t]; if (!a) return;\n"
 "    var i = a.indexOf(f); if (i >= 0) a.splice(i, 1);\n"
@@ -2789,9 +2991,21 @@ nserror qjs_dom_setup(struct jsthread *t)
 		JS_SetPropertyStr(ctx, global, "Event", ctor);
 	}
 
-	/* expose element proto to the setup script, then hide it */
+	/* expose prototypes to the setup scripts, then hide them */
 	JS_SetPropertyStr(ctx, global, "__ns_Element_proto",
 			  JS_DupValue(ctx, t->element_proto));
+	JS_SetPropertyStr(ctx, global, "__ns_Node_proto",
+			  JS_DupValue(ctx, t->node_proto));
+	JS_SetPropertyStr(ctx, global, "__ns_Document_proto",
+			  JS_DupValue(ctx, t->document_proto));
+	JS_SetPropertyStr(ctx, global, "__ns_Text_proto",
+			  JS_DupValue(ctx, t->text_proto));
+	JS_SetPropertyStr(ctx, global, "__ns_Event_proto",
+			  JS_DupValue(ctx, t->event_proto));
+	JS_SetPropertyStr(ctx, global, "__ns_Media_proto",
+			  JS_DupValue(ctx, t->media_proto));
+
+	qjs_native_setup(t);
 
 	setup = JS_Eval(ctx, qjs_setup_script,
 			sizeof(qjs_setup_script) - 1,
@@ -2800,11 +3014,37 @@ nserror qjs_dom_setup(struct jsthread *t)
 		qjs_dump_error(ctx);
 	JS_FreeValue(ctx, setup);
 
+	/* the web platform runtime (runtime.js) */
 	{
-		JSAtom atom = JS_NewAtom(ctx, "__ns_Element_proto");
+		/* the embedded array is not NUL terminated */
+		char *src = malloc(runtime_js_len + 1);
+		if (src != NULL) {
+			memcpy(src, runtime_js, runtime_js_len);
+			src[runtime_js_len] = '\0';
+			setup = JS_Eval(ctx, src, runtime_js_len,
+					"<netsurf-runtime>",
+					JS_EVAL_TYPE_GLOBAL);
+			free(src);
+			if (JS_IsException(setup))
+				qjs_dump_error(ctx);
+			JS_FreeValue(ctx, setup);
+		}
+	}
+	qjs_run_jobs(ctx);
 
-		JS_DeleteProperty(ctx, global, atom, 0);
-		JS_FreeAtom(ctx, atom);
+	{
+		static const char *hide[] = {
+			"__ns_Element_proto", "__ns_Node_proto",
+			"__ns_Document_proto", "__ns_Text_proto",
+			"__ns_Event_proto", "__ns_Media_proto", NULL
+		};
+		int i;
+
+		for (i = 0; hide[i] != NULL; i++) {
+			JSAtom atom = JS_NewAtom(ctx, hide[i]);
+			JS_DeleteProperty(ctx, global, atom, 0);
+			JS_FreeAtom(ctx, atom);
+		}
 	}
 
 	JS_FreeValue(ctx, global);
@@ -2815,9 +3055,17 @@ nserror qjs_dom_setup(struct jsthread *t)
 
 void qjs_dom_closethread(struct jsthread *t)
 {
+	qjs_native_closethread(t);
+
 	while (t->timers != NULL) {
 		struct qjs_timer *tm = t->timers;
 
+		if (tm->firing) {
+			/* freed by qjs_timer_fire when the callback returns */
+			qjs_timer_unlink(tm);
+			tm->cancelled = true;
+			continue;
+		}
 		guit->misc->schedule(-1, qjs_timer_fire, tm);
 		qjs_timer_free(tm); /* unlinks from t->timers */
 	}
@@ -2872,18 +3120,28 @@ bool qjs_dom_fire_event(struct jsthread *t, const char *type,
 
 	qjs_deadline_start(t);
 
-	/* the load event doubles as DOMContentLoaded at the document */
-	if (strcmp(type, "load") == 0) {
+	/* DOMContentLoaded is dispatched at the document (and seen by
+	 * the window as it bubbles); load only at the window */
+	if (strcmp(type, "DOMContentLoaded") == 0 || strcmp(type, "load") == 0) {
 		JSValue docv = JS_GetPropertyStr(ctx, global, "document");
 
+		t->ready_state = (type[0] == 'l') ? 2 : 1;
 		if (JS_IsObject(docv)) {
 			args[0] = docv;
-			args[1] = JS_NewString(ctx, "DOMContentLoaded");
+			args[1] = JS_NewString(ctx, "readystatechange");
 			args[2] = qjs_dom_wrap_event(t, evt);
 			ret = qjs_call_helper(ctx, "__ns_call", 3, args);
 			JS_FreeValue(ctx, ret);
 			JS_FreeValue(ctx, args[1]);
 			JS_FreeValue(ctx, args[2]);
+			if (type[0] == 'D') {
+				args[1] = JS_NewString(ctx, type);
+				args[2] = qjs_dom_wrap_event(t, evt);
+				ret = qjs_call_helper(ctx, "__ns_call", 3, args);
+				JS_FreeValue(ctx, ret);
+				JS_FreeValue(ctx, args[1]);
+				JS_FreeValue(ctx, args[2]);
+			}
 		}
 		JS_FreeValue(ctx, docv);
 	}

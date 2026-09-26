@@ -57,6 +57,9 @@
 #include "html/font.h"
 #include "html/form_internal.h"
 #include "html/private.h"
+#include "html/media.h"
+
+static void html_toggle_details(dom_node *node);
 #include "html/imagemap.h"
 #include "html/interaction.h"
 
@@ -594,6 +597,13 @@ struct mouse_action_state {
 	/** non html object */
 	hlcache_handle *object;
 
+	/** media element (<video>/<audio>) */
+	struct {
+		struct box *box;
+		int box_x;
+		int box_y;
+	} media;
+
 	/** iframe */
 	struct browser_window *iframe;
 
@@ -717,6 +727,12 @@ get_mouse_action_node(html_content *html,
 
 		if (box->iframe) {
 			man->iframe = box->iframe;
+		}
+
+		if (box->media) {
+			man->media.box = box;
+			man->media.box_x = box_x;
+			man->media.box_y = box_y;
 		}
 
 		if (box->href) {
@@ -867,6 +883,7 @@ gadget_mouse_action(html_content *html,
 		mas->result.status = messages_get("FormCheckbox");
 		if (mouse & BROWSER_MOUSE_CLICK_1) {
 			mas->gadget.control->selected = !mas->gadget.control->selected;
+			html_fire_change(mas->gadget.control);
 			dom_html_input_element_set_checked(
 				(dom_html_input_element *)(mas->gadget.control->node),
 				mas->gadget.control->selected);
@@ -878,6 +895,7 @@ gadget_mouse_action(html_content *html,
 		mas->result.status = messages_get("FormRadio");
 		if (mouse & BROWSER_MOUSE_CLICK_1) {
 			form_radio_set(mas->gadget.control);
+			html_fire_change(mas->gadget.control);
 		}
 		break;
 
@@ -1358,6 +1376,15 @@ mouse_action_drag_none(html_content *html,
 	} else if (mas.gadget.control) {
 		res = gadget_mouse_action(html, mouse, x, y, &mas);
 
+	} else if (mas.media.box != NULL &&
+		   html_media_mouse(mas.media.box,
+				x - mas.media.box_x -
+					mas.media.box->padding[LEFT],
+				y - mas.media.box_y -
+					mas.media.box->padding[TOP],
+				mouse)) {
+		mas.result.pointer = BROWSER_POINTER_POINT;
+
 	} else if ((mas.object != NULL) && (mouse & BROWSER_MOUSE_MOD_2)) {
 
 		if (mouse & BROWSER_MOUSE_DRAG_2) {
@@ -1399,9 +1426,28 @@ mouse_action_drag_none(html_content *html,
 		content_broadcast(c, CONTENT_MSG_POINTER, &msg_data);
 	}
 
-	/* fire dom click event */
-	if (mouse & BROWSER_MOUSE_CLICK_1) {
-		fire_generic_dom_event(corestring_dom_click, mas.node, true, true);
+	/* fire dom click event; a script calling preventDefault() cancels
+	 * the default action (following a link, submitting a form) */
+	if ((mouse & BROWSER_MOUSE_CLICK_1) && mas.node != NULL) {
+		if (!fire_generic_dom_event(corestring_dom_click, mas.node,
+				true, true)) {
+			if (mas.result.action == ACTION_NAVIGATE ||
+			    mas.result.action == ACTION_SUBMIT ||
+			    mas.result.action == ACTION_JS)
+				mas.result.action = ACTION_NONE;
+		} else {
+			html_toggle_details(mas.node);
+		}
+	}
+
+	/* a form's submit event can cancel submission */
+	if (mas.result.action == ACTION_SUBMIT &&
+	    mas.gadget.control != NULL &&
+	    mas.gadget.control->form != NULL &&
+	    mas.gadget.control->form->node != NULL &&
+	    !fire_generic_dom_event(corestring_dom_submit,
+			mas.gadget.control->form->node, true, true)) {
+		mas.result.action = ACTION_NONE;
 	}
 
 	/* deferred actions that can cause this browser_window to be destroyed
@@ -1465,6 +1511,69 @@ nserror html_mouse_track(struct content *c,
 			 int x, int y)
 {
 	return html_mouse_action(c, bw, mouse, x, y);
+}
+
+
+/**
+ * Default action of a click in a <summary>: toggle its <details>.
+ */
+static void html_toggle_details(dom_node *node)
+{
+	dom_node *n = node ? dom_node_ref(node) : NULL, *p = NULL;
+
+	while (n != NULL) {
+		dom_html_element_type tag;
+		dom_node_type type;
+
+		if (dom_node_get_node_type(n, &type) == DOM_NO_ERR &&
+		    type == DOM_ELEMENT_NODE &&
+		    dom_html_element_get_tag_type(n, &tag) == DOM_NO_ERR) {
+			if (tag == DOM_HTML_ELEMENT_TYPE_A ||
+			    tag == DOM_HTML_ELEMENT_TYPE_BUTTON ||
+			    tag == DOM_HTML_ELEMENT_TYPE_INPUT)
+				break;
+			if (tag == DOM_HTML_ELEMENT_TYPE_SUMMARY) {
+				dom_node *details = NULL;
+				dom_html_element_type ptag;
+				if (dom_node_get_parent_node(n, &details) ==
+						DOM_NO_ERR && details != NULL &&
+				    dom_html_element_get_tag_type(details,
+						&ptag) == DOM_NO_ERR &&
+				    ptag == DOM_HTML_ELEMENT_TYPE_DETAILS) {
+					dom_string *open = NULL, *empty = NULL;
+					bool has = false;
+					dom_string_create((const uint8_t *)"open",
+							4, &open);
+					dom_string_create((const uint8_t *)"", 0,
+							&empty);
+					if (open != NULL && empty != NULL) {
+						dom_element_has_attribute(details,
+								open, &has);
+						if (has)
+							dom_element_remove_attribute(
+								details, open);
+						else
+							dom_element_set_attribute(
+								details, open,
+								empty);
+					}
+					if (open != NULL)
+						dom_string_unref(open);
+					if (empty != NULL)
+						dom_string_unref(empty);
+				}
+				if (details != NULL)
+					dom_node_unref(details);
+				break;
+			}
+		}
+		if (dom_node_get_parent_node(n, &p) != DOM_NO_ERR)
+			p = NULL;
+		dom_node_unref(n);
+		n = p;
+	}
+	if (n != NULL)
+		dom_node_unref(n);
 }
 
 

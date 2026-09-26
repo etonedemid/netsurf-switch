@@ -27,6 +27,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 
+#include "netsurf/types.h"
 #include "netsurf/plot_style.h"
 
 struct bitmap;
@@ -81,6 +82,63 @@ struct redraw_context {
 	void *priv;
 };
 
+
+/**
+ * Corner radii of a rounded rectangle, in device pixels.
+ *
+ * Index order is top-left, top-right, bottom-right, bottom-left.
+ */
+struct plot_radii {
+	int h[4]; /**< horizontal radii */
+	int v[4]; /**< vertical radii */
+};
+
+/** Maximum number of colour stops in a plotted gradient */
+#define PLOT_GRADIENT_MAX_STOPS 16
+
+/**
+ * A CSS gradient resolved to device pixels.
+ */
+struct plot_gradient {
+	bool radial; /**< radial rather than linear */
+	bool repeating; /**< repeating-*-gradient */
+	/** linear: gradient line start and direction (unit vector) */
+	float x0, y0, dx, dy;
+	/** linear: gradient line length; radial: unused */
+	float length;
+	/** radial: centre and radii of the ending shape */
+	float cx, cy, rx, ry;
+	int nstops;
+	/** stop colours (NetSurf colour with inverted alpha in top byte) */
+	colour stop_colour[PLOT_GRADIENT_MAX_STOPS];
+	/** stop positions: fraction along the gradient ray */
+	float stop_pos[PLOT_GRADIENT_MAX_STOPS];
+};
+
+/**
+ * A resolved box-shadow.
+ */
+struct plot_shadow {
+	int offset_x, offset_y;
+	int blur; /**< blur radius */
+	int spread;
+	colour colour; /**< NetSurf colour with inverted alpha */
+	bool inset;
+};
+
+/**
+ * Compositing parameters applied when a layer is ended.
+ */
+struct plot_layer {
+	struct rect box; /**< shape rectangle for the rounded clip */
+	struct plot_radii radii; /**< rounded clip, all zero for none */
+	float opacity; /**< 0 to 1 */
+	float grayscale; /**< filter amounts, 0 for none */
+	float brightness; /**< 1 for unchanged */
+	float invert;
+	float sepia;
+	float blur;
+};
 
 /**
  * Plotter operations table.
@@ -328,6 +386,64 @@ struct plotter_table {
 	 */
 	nserror (*flush)(
 			const struct redraw_context *ctx);
+
+	/* Optional extensions for modern CSS rendering; any may be NULL,
+	 * in which case the core falls back to plain rendering. */
+
+	/**
+	 * Fill the area between two rounded rectangles.
+	 *
+	 * \param outer outer shape rectangle
+	 * \param oradii outer corner radii
+	 * \param inner inner shape rectangle, or NULL to fill all of outer
+	 * \param iradii inner corner radii
+	 * \param c fill colour (may be translucent)
+	 */
+	nserror (*rounded_fill)(const struct redraw_context *ctx,
+			const struct rect *outer,
+			const struct plot_radii *oradii,
+			const struct rect *inner,
+			const struct plot_radii *iradii,
+			colour c);
+
+	/**
+	 * Fill a rectangle (intersected with the clip) with a gradient
+	 * whose geometry is in device coordinates.
+	 */
+	nserror (*gradient)(const struct redraw_context *ctx,
+			const struct rect *area,
+			const struct plot_gradient *gradient);
+
+	/**
+	 * Plot a box shadow for the given border (or, for inset shadows,
+	 * padding) box.
+	 */
+	nserror (*shadow)(const struct redraw_context *ctx,
+			const struct rect *box,
+			const struct plot_radii *radii,
+			const struct plot_shadow *shadow);
+
+	/**
+	 * Start a compositing layer covering area.
+	 *
+	 * Everything plotted until the matching layer_end is composited
+	 * using the parameters passed to layer_end. Layers nest.
+	 */
+	nserror (*layer_begin)(const struct redraw_context *ctx,
+			const struct rect *area);
+
+	/**
+	 * End the most recently started layer.
+	 */
+	nserror (*layer_end)(const struct redraw_context *ctx,
+			const struct plot_layer *layer);
+
+	/**
+	 * Tint mode: while enabled, paths and bitmaps are drawn in the
+	 * given colour using only their coverage/alpha (for mask-image).
+	 */
+	nserror (*tint)(const struct redraw_context *ctx, bool enable,
+			colour c);
 
 	/* flags */
 	/**

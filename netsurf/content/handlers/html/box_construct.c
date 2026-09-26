@@ -45,6 +45,8 @@
 #include "html/box.h"
 #include "html/box_manipulate.h"
 #include "html/box_construct.h"
+#include "html/shadow.h"
+#include "css/css_fx.h"
 #include "html/box_special.h"
 #include "html/box_normalise.h"
 #include "html/form_internal.h"
@@ -62,6 +64,8 @@ struct box_construct_ctx {
 	box_construct_complete_cb cb;	/**< Callback to invoke on completion */
 
 	int *bctx;			/**< talloc context */
+
+	bool synchronous;		/**< Convert without yielding */
 };
 
 /**
@@ -109,8 +113,9 @@ static const box_type box_map[] = {
 	BOX_NONE,            /* CSS_DISPLAY_NONE */
 	BOX_FLEX,            /* CSS_DISPLAY_FLEX */
 	BOX_INLINE_FLEX,     /* CSS_DISPLAY_INLINE_FLEX */
-	BOX_BLOCK,           /* CSS_DISPLAY_GRID */
-	BOX_INLINE_BLOCK,    /* CSS_DISPLAY_INLINE_GRID */
+	BOX_FLEX,            /* CSS_DISPLAY_GRID */
+	BOX_INLINE_FLEX,     /* CSS_DISPLAY_INLINE_GRID */
+	BOX_INLINE,          /* CSS_DISPLAY_CONTENTS (handled specially) */
 };
 
 
@@ -167,9 +172,9 @@ box_extract_properties(dom_node *n, struct box_construct_props *props)
 
 		/* Find ancestor node containing parent box */
 		while (true) {
-			err = dom_node_get_parent_node(current_node,
-					&parent_node);
-			if (err != DOM_NO_ERR || parent_node == NULL)
+			parent_node = html_flat_parent(current_node);
+			err = DOM_NO_ERR;
+			if (parent_node == NULL)
 				break;
 
 			parent_box = box_for_node(parent_node);
@@ -194,9 +199,9 @@ box_extract_properties(dom_node *n, struct box_construct_props *props)
 		while (true) {
 			struct box *b;
 
-			err = dom_node_get_parent_node(current_node,
-					&parent_node);
-			if (err != DOM_NO_ERR || parent_node == NULL) {
+			parent_node = html_flat_parent(current_node);
+			err = DOM_NO_ERR;
+			if (parent_node == NULL) {
 				if (current_node != n)
 					dom_node_unref(current_node);
 				break;
@@ -214,7 +219,8 @@ box_extract_properties(dom_node *n, struct box_construct_props *props)
 			 * use the parent node's styling as the parent
 			 * style, above. */
 			if (b != NULL && b->type != BOX_INLINE &&
-					b->type != BOX_BR) {
+					b->type != BOX_BR &&
+					!(b->flags & CONTENTS_BOX)) {
 				props->containing_block = b;
 
 				dom_node_unref(parent_node);
@@ -299,59 +305,468 @@ box_get_style(html_content *c,
 
 
 /**
- * Construct the box required for a generated element.
+ * Start fetches for the images a box's style refers to (background and
+ * mask images).
  *
- * \param n        XML node of type XML_ELEMENT_NODE
+ * \return false on memory exhaustion
+ */
+static bool box_fetch_style_images(html_content *content, struct box *box)
+{
+	lwc_string *bgimage_uri;
+	char *mask;
+	nsurl *url;
+
+	if (box->style == NULL)
+		return true;
+
+	if (css_computed_background_image(box->style, &bgimage_uri) ==
+			CSS_BACKGROUND_IMAGE_IMAGE && bgimage_uri != NULL &&
+			strncmp(lwc_string_data(bgimage_uri), "gradient:", 9) != 0 &&
+			nsoption_bool(background_images) == true) {
+		if (nsurl_create(lwc_string_data(bgimage_uri), &url) ==
+				NSERROR_OK) {
+			bool ok = html_fetch_object(content, url, box,
+					image_types, true);
+			nsurl_unref(url);
+			if (!ok)
+				return false;
+		}
+	}
+
+	mask = cssfx_mask_url(box->style);
+	if (mask != NULL) {
+		if (nsurl_create(mask, &url) == NSERROR_OK) {
+			bool ok = html_fetch_mask_object(content, url, box);
+			nsurl_unref(url);
+			if (!ok) {
+				free(mask);
+				return false;
+			}
+		}
+		free(mask);
+	}
+	return true;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* CSS counters: a flat set of named counters maintained in document   */
+/* order while boxes are constructed (nested scopes are not modelled). */
+
+#define BOX_MAX_COUNTERS 64
+
+static struct {
+	lwc_string *name;
+	int value;
+} box_counters[BOX_MAX_COUNTERS];
+static int box_ncounters;
+
+static void box_counters_reset(void)
+{
+	int i;
+
+	for (i = 0; i < box_ncounters; i++)
+		lwc_string_unref(box_counters[i].name);
+	box_ncounters = 0;
+}
+
+static int *box_counter(lwc_string *name, bool create)
+{
+	int i;
+	bool match;
+
+	for (i = 0; i < box_ncounters; i++) {
+		if (lwc_string_isequal(box_counters[i].name, name, &match) ==
+				lwc_error_ok && match)
+			return &box_counters[i].value;
+	}
+	if (!create || box_ncounters >= BOX_MAX_COUNTERS)
+		return NULL;
+	box_counters[box_ncounters].name = lwc_string_ref(name);
+	box_counters[box_ncounters].value = 0;
+	return &box_counters[box_ncounters++].value;
+}
+
+/** apply an element's counter-reset and counter-increment */
+static void box_counters_apply(const css_computed_style *style)
+{
+	const css_computed_counter *c = NULL;
+
+	if (style == NULL)
+		return;
+	if (css_computed_counter_reset(style, &c) == CSS_COUNTER_RESET_NAMED &&
+			c != NULL) {
+		for (; c->name != NULL; c++) {
+			int *v = box_counter(c->name, true);
+			if (v != NULL)
+				*v = FIXTOINT(c->value);
+		}
+	}
+	c = NULL;
+	if (css_computed_counter_increment(style, &c) ==
+			CSS_COUNTER_INCREMENT_NAMED && c != NULL) {
+		for (; c->name != NULL; c++) {
+			int *v = box_counter(c->name, true);
+			if (v != NULL)
+				*v += FIXTOINT(c->value);
+		}
+	}
+}
+
+/**
+ * Build the text of a pseudo element's content property.
+ *
+ * \param n     element the pseudo element belongs to
+ * \param item  content items
+ * \param uri   updated with the first url() item, if any
+ * \return malloc()ed text (possibly empty) or NULL on memory exhaustion
+ */
+static char *
+box_generated_text(dom_node *n, const css_computed_content_item *item,
+		lwc_string **uri)
+{
+	size_t len = 0, cap = 64;
+	char *t = malloc(cap);
+
+	if (t == NULL)
+		return NULL;
+	t[0] = '\0';
+	*uri = NULL;
+
+	for (; item != NULL && item->type != CSS_COMPUTED_CONTENT_NONE;
+			item++) {
+		const char *add = NULL;
+		size_t alen = 0;
+		dom_string *attr = NULL;
+		char num[16];
+
+		switch (item->type) {
+		case CSS_COMPUTED_CONTENT_STRING:
+			add = lwc_string_data(item->data.string);
+			alen = lwc_string_length(item->data.string);
+			break;
+		case CSS_COMPUTED_CONTENT_URI:
+			if (*uri == NULL)
+				*uri = item->data.uri;
+			break;
+		case CSS_COMPUTED_CONTENT_ATTR: {
+			dom_string *name = NULL;
+			if (dom_string_create((const uint8_t *)
+					lwc_string_data(item->data.attr),
+					lwc_string_length(item->data.attr),
+					&name) == DOM_NO_ERR) {
+				dom_element_get_attribute(n, name, &attr);
+				dom_string_unref(name);
+			}
+			if (attr != NULL) {
+				add = dom_string_data(attr);
+				alen = dom_string_byte_length(attr);
+			}
+			break;
+		}
+		case CSS_COMPUTED_CONTENT_OPEN_QUOTE:
+			add = "\xe2\x80\x9c";
+			alen = 3;
+			break;
+		case CSS_COMPUTED_CONTENT_CLOSE_QUOTE:
+			add = "\xe2\x80\x9d";
+			alen = 3;
+			break;
+		case CSS_COMPUTED_CONTENT_COUNTER:
+		case CSS_COMPUTED_CONTENT_COUNTERS: {
+			int *v = box_counter(item->type ==
+					CSS_COMPUTED_CONTENT_COUNTER ?
+					item->data.counter.name :
+					item->data.counters.name, false);
+			snprintf(num, sizeof(num), "%d", v ? *v : 0);
+			add = num;
+			alen = strlen(num);
+			break;
+		}
+		default:
+			break;
+		}
+
+		if (add != NULL && alen > 0) {
+			if (len + alen + 1 > cap) {
+				char *nt;
+				while (len + alen + 1 > cap)
+					cap *= 2;
+				nt = realloc(t, cap);
+				if (nt == NULL) {
+					free(t);
+					if (attr != NULL)
+						dom_string_unref(attr);
+					return NULL;
+				}
+				t = nt;
+			}
+			memcpy(t + len, add, alen);
+			len += alen;
+			t[len] = '\0';
+		}
+		if (attr != NULL)
+			dom_string_unref(attr);
+	}
+	return t;
+}
+
+
+static void box_text_transform(char *s, unsigned int len,
+		enum css_text_transform_e tt);
+
+/** does a pseudo element style generate a box? */
+static bool box_has_pseudo(const css_computed_style *style)
+{
+	const css_computed_content_item *c_item;
+
+	return style != NULL &&
+		css_computed_content(style, &c_item) == CSS_CONTENT_SET &&
+		ns_computed_display(style, false) != CSS_DISPLAY_NONE;
+}
+
+
+/** a block's trailing inline container, created if necessary */
+static struct box *
+box_generated_container(struct box *parent, html_content *content)
+{
+	struct box *ic;
+
+	if (parent->last != NULL && parent->last->type == BOX_INLINE_CONTAINER)
+		return parent->last;
+	ic = box_create(NULL, NULL, false, NULL, NULL, NULL, NULL,
+			content->bctx);
+	if (ic == NULL)
+		return NULL;
+	ic->type = BOX_INLINE_CONTAINER;
+	box_add_child(parent, ic);
+	return ic;
+}
+
+
+/** add text boxes for generated content to an inline container */
+static bool
+box_generated_add_text(struct box *ic, const char *text,
+		const css_computed_style *style, struct box *owner,
+		html_content *content)
+{
+	char *squashed, *t;
+	struct box *tb;
+	size_t tl;
+	enum css_white_space_e ws = css_computed_white_space(style);
+
+	if (ws == CSS_WHITE_SPACE_PRE || ws == CSS_WHITE_SPACE_PRE_WRAP ||
+			ws == CSS_WHITE_SPACE_PRE_LINE)
+		squashed = strdup(text);
+	else
+		squashed = squash_whitespace(text);
+	if (squashed == NULL)
+		return false;
+
+	t = squashed;
+	if (t[0] == ' ') {
+		/* leading space belongs to the previous inline box */
+		if (ic->last != NULL)
+			ic->last->space = UNKNOWN_WIDTH;
+		t++;
+	}
+	tl = strlen(t);
+	if (tl == 0) {
+		free(squashed);
+		return true;
+	}
+
+	/** \todo Not wise to drop const from the computed style */
+	tb = box_create(NULL, (css_computed_style *) style, false,
+			owner->href, owner->target, owner->title, NULL,
+			content->bctx);
+	if (tb == NULL) {
+		free(squashed);
+		return false;
+	}
+	tb->type = BOX_TEXT;
+	tb->text = talloc_strndup(content->bctx, t, tl);
+	if (tb->text == NULL) {
+		free(squashed);
+		return false;
+	}
+	tb->length = tl;
+	if (tb->length > 0 && tb->text[tb->length - 1] == ' ') {
+		tb->space = UNKNOWN_WIDTH;
+		tb->length--;
+	}
+	if (css_computed_text_transform(style) != CSS_TEXT_TRANSFORM_NONE)
+		box_text_transform(tb->text, tb->length,
+				css_computed_text_transform(style));
+	box_add_child(ic, tb);
+	free(squashed);
+	return true;
+}
+
+
+/**
+ * Construct the boxes for a ::before or ::after pseudo element.
+ *
+ * \param n        element the pseudo element belongs to
  * \param content  Content of type CONTENT_HTML that is being processed
- * \param box      Box which may have generated content
- * \param style    Complete computed style for pseudo element, or NULL
- *
- * \todo This is currently incomplete. It just does enough to support
- * the clearfix hack. (http://www.positioniseverything.net/easyclearing.html )
+ * \param box      the element's box
+ * \param style    computed style for the pseudo element, or NULL
+ * \param ic       inline container holding box, if box is inline
  */
 static void
 box_construct_generate(dom_node *n,
 		       html_content *content,
 		       struct box *box,
-		       const css_computed_style *style)
+		       const css_computed_style *style,
+		       struct box *ic)
 {
 	struct box *gen = NULL;
-	enum css_display_e computed_display;
 	const css_computed_content_item *c_item;
+	enum css_display_e disp, static_disp;
+	lwc_string *uri = NULL;
+	char *text;
+	box_type type;
+	bool parent_inline, parent_flex, inline_level, floated, absolute;
+	uint8_t pos;
 
-	/* Nothing to generate if the parent box is not a block */
-	if (box->type != BOX_BLOCK)
+	if (style == NULL)
+		return;
+	/* a pseudo element exists only if content is set */
+	if (css_computed_content(style, &c_item) != CSS_CONTENT_SET)
 		return;
 
-	/* To determine if an element has a pseudo element, we select
-	 * for it and test to see if the returned style's content
-	 * property is set to normal. */
-	if (style == NULL ||
-			css_computed_content(style, &c_item) ==
-			CSS_CONTENT_NORMAL) {
-		/* No pseudo element */
+	disp = ns_computed_display(style, false);
+	if (disp == CSS_DISPLAY_NONE || disp == CSS_DISPLAY_CONTENTS)
 		return;
+	static_disp = ns_computed_display_static(style);
+
+	parent_inline = (box->type == BOX_INLINE);
+	parent_flex = (box->type == BOX_FLEX || box->type == BOX_INLINE_FLEX);
+	if (parent_inline && ic == NULL)
+		return;
+	if (!parent_inline && box->type != BOX_BLOCK &&
+			box->type != BOX_INLINE_BLOCK &&
+			box->type != BOX_FLEX && box->type != BOX_INLINE_FLEX &&
+			box->type != BOX_TABLE_CELL)
+		return;
+
+	floated = css_computed_float(style) != CSS_FLOAT_NONE;
+	pos = css_computed_position(style);
+	absolute = (pos == CSS_POSITION_ABSOLUTE || pos == CSS_POSITION_FIXED);
+
+	if (absolute && (static_disp == CSS_DISPLAY_INLINE ||
+			static_disp == CSS_DISPLAY_INLINE_BLOCK ||
+			static_disp == CSS_DISPLAY_INLINE_FLEX))
+		type = BOX_INLINE_BLOCK;
+	else
+		type = box_map[disp];
+	switch (type) {
+	case BOX_TABLE:
+	case BOX_TABLE_ROW:
+	case BOX_TABLE_ROW_GROUP:
+	case BOX_TABLE_CELL:
+		type = BOX_BLOCK;
+		break;
+	case BOX_NONE:
+		return;
+	default:
+		break;
 	}
 
-	/* create box for this element */
-	computed_display = ns_computed_display(style, box_is_root(n));
-	if (computed_display == CSS_DISPLAY_BLOCK ||
-			computed_display == CSS_DISPLAY_TABLE) {
-		/* currently only support block level boxes */
+	if (parent_flex) {
+		/* blockification of flex items */
+		if (type == BOX_INLINE || type == BOX_INLINE_BLOCK)
+			type = BOX_BLOCK;
+		else if (type == BOX_INLINE_FLEX)
+			type = BOX_FLEX;
+		floated = false;
+	}
 
-		/** \todo Not wise to drop const from the computed style */
-		gen = box_create(NULL, (css_computed_style *) style,
-				false, NULL, NULL, NULL, NULL, content->bctx);
-		if (gen == NULL) {
+	inline_level = type == BOX_INLINE || type == BOX_INLINE_BLOCK ||
+			type == BOX_INLINE_FLEX || floated;
+	if (parent_inline && !inline_level) {
+		/* block inside inline: approximate as inline-block */
+		type = BOX_INLINE_BLOCK;
+		inline_level = true;
+	}
+
+	box_counters_apply(style);
+	text = box_generated_text(n, c_item, &uri);
+	if (text == NULL)
+		return;
+
+	/** \todo Not wise to drop const from the computed style */
+	gen = box_create(NULL, (css_computed_style *) style, false,
+			box->href, box->target, box->title, NULL,
+			content->bctx);
+	if (gen == NULL) {
+		free(text);
+		return;
+	}
+	gen->type = type;
+
+	if (inline_level) {
+		if (!parent_inline)
+			ic = box_generated_container(box, content);
+		if (ic == NULL) {
+			free(text);
 			return;
 		}
-
-		/* set box type from computed display */
-		gen->type = box_map[ns_computed_display(
-				style, box_is_root(n))];
-
+		if (floated) {
+			struct box *flt = box_create(NULL, NULL, false,
+					box->href, box->target, box->title,
+					NULL, content->bctx);
+			if (flt == NULL) {
+				free(text);
+				return;
+			}
+			flt->type = css_computed_float(style) ==
+					CSS_FLOAT_LEFT ? BOX_FLOAT_LEFT :
+					BOX_FLOAT_RIGHT;
+			/* floats are blockified */
+			if (gen->type == BOX_INLINE ||
+					gen->type == BOX_INLINE_BLOCK)
+				gen->type = BOX_BLOCK;
+			else if (gen->type == BOX_INLINE_FLEX)
+				gen->type = BOX_FLEX;
+			box_add_child(ic, flt);
+			box_add_child(flt, gen);
+		} else {
+			box_add_child(ic, gen);
+		}
+	} else {
 		box_add_child(box, gen);
 	}
+
+	if (uri != NULL) {
+		/* content: url() replaces the pseudo element with an image */
+		nsurl *url;
+		if (nsurl_create(lwc_string_data(uri), &url) == NSERROR_OK) {
+			gen->flags |= IS_REPLACED;
+			html_fetch_object(content, url, gen, image_types, false);
+			nsurl_unref(url);
+		}
+	} else if (gen->type == BOX_INLINE) {
+		struct box *end;
+		box_generated_add_text(ic, text, style, gen, content);
+		end = box_create(NULL, (css_computed_style *) style, false,
+				box->href, box->target, box->title, NULL,
+				content->bctx);
+		if (end != NULL) {
+			end->type = BOX_INLINE_END;
+			box_add_child(ic, end);
+			gen->inline_end = end;
+			end->inline_end = gen;
+		}
+	} else if (text[0] != '\0') {
+		struct box *inner = box_generated_container(gen, content);
+		if (inner != NULL)
+			box_generated_add_text(inner, text, style, gen,
+					content);
+	}
+
+	free(text);
+	box_fetch_style_images(content, gen);
 }
 
 
@@ -476,7 +891,6 @@ box_construct_element(struct box_construct_ctx *ctx, bool *convert_children)
 	enum css_display_e css_display;
 	struct box *box = NULL, *old_box;
 	css_select_results *styles = NULL;
-	lwc_string *bgimage_uri;
 	dom_exception err;
 	struct box_construct_props props;
 	const css_computed_style *root_style = NULL;
@@ -574,6 +988,33 @@ box_construct_element(struct box_construct_ctx *ctx, bool *convert_children)
 		dom_string_unref(s);
 	}
 
+	if (!props.node_is_root && css_computed_display_static(box->style) ==
+			CSS_DISPLAY_CONTENTS) {
+		/* display: contents generates no box of its own; its
+		 * children are placed as if they were children of the
+		 * parent. A detached box records the style (for
+		 * inheritance) and link for the children. */
+		dom_html_element_type tag;
+		if (dom_html_element_get_tag_type(ctx->n, &tag) == DOM_NO_ERR &&
+				tag == DOM_HTML_ELEMENT_TYPE_A) {
+			box->type = BOX_INLINE;
+			convert_special_elements(ctx->n, ctx->content, box,
+					convert_children);
+		}
+		box->type = BOX_INLINE;
+		box->flags |= CONTENTS_BOX | CONVERT_CHILDREN;
+		err = dom_node_set_user_data(ctx->n,
+				corestring_dom___ns_key_box_node_data, box,
+				NULL, (void *) &old_box);
+		if (err != DOM_NO_ERR)
+			return false;
+		box->node = dom_node_ref(ctx->n);
+		box->next = ctx->content->contents_boxes;
+		ctx->content->contents_boxes = box;
+		*convert_children = true;
+		return true;
+	}
+
 	css_display = ns_computed_display_static(box->style);
 
 	/* Set box type from computed display */
@@ -618,12 +1059,6 @@ box_construct_element(struct box_construct_ctx *ctx, bool *convert_children)
 				     box,
 				     convert_children) == false) {
 		return false;
-	}
-
-	/* Handle the :before pseudo element */
-	if (!(box->flags & IS_REPLACED)) {
-		box_construct_generate(ctx->n, ctx->content, box,
-				box->styles->styles[CSS_PSEUDO_ELEMENT_BEFORE]);
 	}
 
 	if (box->type == BOX_NONE || (ns_computed_display(box->style,
@@ -683,31 +1118,9 @@ box_construct_element(struct box_construct_ctx *ctx, bool *convert_children)
 		box_add_child(props.containing_block, props.inline_container);
 	}
 
-	/* Kick off fetch for any background image */
-	if (css_computed_background_image(box->style, &bgimage_uri) ==
-			CSS_BACKGROUND_IMAGE_IMAGE && bgimage_uri != NULL &&
-			nsoption_bool(background_images) == true) {
-		nsurl *url;
-		nserror error;
-
-		/* TODO: we get a url out of libcss as a lwc string, but
-		 *       earlier we already had it as a nsurl after we
-		 *       nsurl_joined it.  Can this be improved?
-		 *       For now, just making another nsurl. */
-		error = nsurl_create(lwc_string_data(bgimage_uri), &url);
-		if (error == NSERROR_OK) {
-			/* Fetch image if we got a valid URL */
-			if (html_fetch_object(ctx->content,
-					      url,
-					      box,
-					      image_types,
-					      true) == false) {
-				nsurl_unref(url);
-				return false;
-			}
-			nsurl_unref(url);
-		}
-	}
+	/* Kick off fetches for background and mask images */
+	if (box_fetch_style_images(ctx->content, box) == false)
+		return false;
 
 	if (*convert_children)
 		box->flags |= CONVERT_CHILDREN;
@@ -758,6 +1171,16 @@ box_construct_element(struct box_construct_ctx *ctx, bool *convert_children)
 		}
 	}
 
+	box_counters_apply(box->style);
+
+	/* Handle the ::before pseudo element, now the box is placed */
+	if (!(box->flags & IS_REPLACED) && *convert_children) {
+		box_construct_generate(ctx->n, ctx->content, box,
+				box->styles->styles[CSS_PSEUDO_ELEMENT_BEFORE],
+				box->type == BOX_INLINE ?
+					props.inline_container : NULL);
+	}
+
 	return true;
 }
 
@@ -777,17 +1200,26 @@ static void box_construct_element_after(dom_node *n, html_content *content)
 
 	assert(box != NULL);
 
+	if (box->flags & CONTENTS_BOX)
+		return;
+
 	box_extract_properties(n, &props);
 
 	if (box->type == BOX_INLINE || box->type == BOX_BR) {
 		/* Insert INLINE_END into containing block */
 		struct box *inline_end;
 		bool has_children;
-		dom_exception err;
 
-		err = dom_node_has_child_nodes(n, &has_children);
-		if (err != DOM_NO_ERR)
-			return;
+		has_children = html_flat_has_children(n);
+
+		/* generated content needs the inline's end even when the
+		 * element itself is empty */
+		if (has_children == false && box->styles != NULL &&
+		    (box_has_pseudo(box->styles->styles[
+				CSS_PSEUDO_ELEMENT_BEFORE]) ||
+		     box_has_pseudo(box->styles->styles[
+				CSS_PSEUDO_ELEMENT_AFTER])))
+			has_children = true;
 
 		if (has_children == false ||
 				(box->flags & CONVERT_CHILDREN) == 0) {
@@ -808,6 +1240,13 @@ static void box_construct_element_after(dom_node *n, html_content *content)
 					props.inline_container);
 		}
 
+		/* Handle the ::after pseudo element */
+		if (box->type == BOX_INLINE && box->styles != NULL)
+			box_construct_generate(n, content, box,
+					box->styles->styles[
+						CSS_PSEUDO_ELEMENT_AFTER],
+					props.inline_container);
+
 		inline_end = box_create(NULL, box->style, false,
 				box->href, box->target, box->title,
 				box->id == NULL ? NULL :
@@ -823,9 +1262,11 @@ static void box_construct_element_after(dom_node *n, html_content *content)
 			inline_end->inline_end = box;
 		}
 	} else if (!(box->flags & IS_REPLACED)) {
-		/* Handle the :after pseudo element */
-		box_construct_generate(n, content, box,
-				box->styles->styles[CSS_PSEUDO_ELEMENT_AFTER]);
+		/* Handle the ::after pseudo element */
+		if (box->styles != NULL)
+			box_construct_generate(n, content, box,
+				box->styles->styles[CSS_PSEUDO_ELEMENT_AFTER],
+				NULL);
 	}
 }
 
@@ -845,104 +1286,44 @@ static dom_node *
 next_node(dom_node *n, html_content *content, bool convert_children)
 {
 	dom_node *next = NULL;
-	bool has_children;
-	dom_exception err;
 
-	err = dom_node_has_child_nodes(n, &has_children);
-	if (err != DOM_NO_ERR) {
-		dom_node_unref(n);
-		return NULL;
-	}
-
-	if (convert_children && has_children) {
-		err = dom_node_get_first_child(n, &next);
-		if (err != DOM_NO_ERR) {
-			dom_node_unref(n);
-			return NULL;
-		}
-		dom_node_unref(n);
-	} else {
-		err = dom_node_get_next_sibling(n, &next);
-		if (err != DOM_NO_ERR) {
-			dom_node_unref(n);
-			return NULL;
-		}
-
+	/* traversal follows the flat tree (shadow roots and slots) */
+	if (convert_children) {
+		next = html_flat_first_child(n);
 		if (next != NULL) {
-			if (box_for_node(n) != NULL)
-				box_construct_element_after(n, content);
 			dom_node_unref(n);
-		} else {
-			if (box_for_node(n) != NULL)
-				box_construct_element_after(n, content);
-
-			while (box_is_root(n) == false) {
-				dom_node *parent = NULL;
-				dom_node *parent_next = NULL;
-
-				err = dom_node_get_parent_node(n, &parent);
-				if (err != DOM_NO_ERR) {
-					dom_node_unref(n);
-					return NULL;
-				}
-
-				assert(parent != NULL);
-
-				err = dom_node_get_next_sibling(parent,
-						&parent_next);
-				if (err != DOM_NO_ERR) {
-					dom_node_unref(parent);
-					dom_node_unref(n);
-					return NULL;
-				}
-
-				if (parent_next != NULL) {
-					dom_node_unref(parent_next);
-					dom_node_unref(parent);
-					break;
-				}
-
-				dom_node_unref(n);
-				n = parent;
-				parent = NULL;
-
-				if (box_for_node(n) != NULL) {
-					box_construct_element_after(
-							n, content);
-				}
-			}
-
-			if (box_is_root(n) == false) {
-				dom_node *parent = NULL;
-
-				err = dom_node_get_parent_node(n, &parent);
-				if (err != DOM_NO_ERR) {
-					dom_node_unref(n);
-					return NULL;
-				}
-
-				assert(parent != NULL);
-
-				err = dom_node_get_next_sibling(parent, &next);
-				if (err != DOM_NO_ERR) {
-					dom_node_unref(parent);
-					dom_node_unref(n);
-					return NULL;
-				}
-
-				if (box_for_node(parent) != NULL) {
-					box_construct_element_after(parent,
-							content);
-				}
-
-				dom_node_unref(parent);
-			}
-
-			dom_node_unref(n);
+			return next;
 		}
 	}
 
-	return next;
+	next = html_flat_next_sibling(n);
+	if (box_for_node(n) != NULL)
+		box_construct_element_after(n, content);
+	if (next != NULL) {
+		dom_node_unref(n);
+		return next;
+	}
+
+	/* climb until an ancestor has a following sibling */
+	while (box_is_root(n) == false) {
+		dom_node *parent = html_flat_parent(n);
+
+		dom_node_unref(n);
+		if (parent == NULL)
+			return NULL;
+		n = parent;
+
+		next = html_flat_next_sibling(n);
+		if (box_for_node(n) != NULL)
+			box_construct_element_after(n, content);
+		if (next != NULL) {
+			dom_node_unref(n);
+			return next;
+		}
+	}
+
+	dom_node_unref(n);
+	return NULL;
 }
 
 
@@ -1238,6 +1619,7 @@ static void convert_xml_to_box(struct box_construct_ctx *ctx)
 	uint32_t num_processed = 0;
 	const uint32_t max_processed_before_yield = 10;
 
+again:
 	do {
 		convert_children = true;
 
@@ -1310,6 +1692,11 @@ static void convert_xml_to_box(struct box_construct_ctx *ctx)
 		}
 	} while (++num_processed < max_processed_before_yield);
 
+	if (ctx->synchronous) {
+		num_processed = 0;
+		goto again;
+	}
+
 	/* More work to do: schedule a continuation */
 	guit->misc->schedule(0, (void *)convert_xml_to_box, ctx);
 }
@@ -1339,15 +1726,59 @@ dom_to_box(dom_node *n,
 		return NSERROR_NOMEM;
 	}
 
+	box_counters_reset();
+
 	ctx->content = c;
 	ctx->n = dom_node_ref(n);
 	ctx->root_box = NULL;
 	ctx->cb = cb;
 	ctx->bctx = c->bctx;
+	ctx->synchronous = false;
 
 	*box_conversion_context = ctx;
 
 	return guit->misc->schedule(0, (void *)convert_xml_to_box, ctx);
+}
+
+static void dom_to_box_sync_done(html_content *c, bool success)
+{
+	c->box_conversion_context = success ? NULL : (void *)c;
+}
+
+/* exported function documented in html/box_construct.h */
+nserror dom_to_box_sync(dom_node *n, html_content *c)
+{
+	struct box_construct_ctx *ctx;
+
+	if (c->bctx == NULL) {
+		c->bctx = talloc_zero(0, int);
+		if (c->bctx == NULL) {
+			return NSERROR_NOMEM;
+		}
+	}
+
+	ctx = malloc(sizeof(*ctx));
+	if (ctx == NULL) {
+		return NSERROR_NOMEM;
+	}
+
+	box_counters_reset();
+
+	ctx->content = c;
+	ctx->n = dom_node_ref(n);
+	ctx->root_box = NULL;
+	ctx->cb = dom_to_box_sync_done;
+	ctx->bctx = c->bctx;
+	ctx->synchronous = true;
+
+	c->box_conversion_context = NULL;
+	convert_xml_to_box(ctx);
+	if (c->box_conversion_context != NULL) {
+		/* failure was reported */
+		c->box_conversion_context = NULL;
+		return NSERROR_BOX_CONVERT;
+	}
+	return NSERROR_OK;
 }
 
 

@@ -527,6 +527,9 @@ css_error css__cascade_counter_increment_reset(uint32_t opv, css_style *style,
 		{
 			uint32_t v = getValue(opv);
 
+			/* (same value as CSS_COUNTER_RESET_NAMED) */
+			value = CSS_COUNTER_INCREMENT_NAMED;
+
 			while (v != COUNTER_INCREMENT_NONE) {
 				css_computed_counter *temp;
 				lwc_string *name;

@@ -55,6 +55,19 @@ static script_handler_t *select_script_handler(content_type ctype)
 }
 
 
+/**
+ * Run a script body, as a classic script or an ES module.
+ */
+static void html_script_run(jsthread *thread, const struct html_script *s,
+		script_handler_t *handler, const uint8_t *data, size_t size,
+		const char *url)
+{
+	if (s->module)
+		js_exec_module(thread, data, size, url);
+	else
+		handler(thread, data, size, url);
+}
+
 /* exported internal interface documented in html/html_internal.h */
 nserror html_script_exec(html_content *c, bool allow_defer)
 {
@@ -96,7 +109,8 @@ nserror html_script_exec(html_content *c, bool allow_defer)
 				size_t size;
 				data = content_get_source_data(
 						s->data.handle, &size );
-				script_handler(c->jsthread, data, size,
+				html_script_run(c->jsthread, s, script_handler,
+					       data, size,
 					       nsurl_access(hlcache_handle_get_url(s->data.handle)));
 				have_run_something = true;
 				/* We have to re-acquire this here since the
@@ -144,6 +158,8 @@ html_process_new_script(html_content *c,
 	nscript->ready_exec = false;
 	nscript->async = false;
 	nscript->defer = false;
+	nscript->module = false;
+	nscript->data.handle = NULL;
 
 	nscript->type = type;
 
@@ -323,7 +339,8 @@ convert_script_sync_cb(hlcache_handle *script,
 			const uint8_t *data;
 			size_t size;
 			data = content_get_source_data(s->data.handle, &size );
-			script_handler(parent->jsthread, data, size,
+			html_script_run(parent->jsthread, s, script_handler,
+				       data, size,
 				       nsurl_access(hlcache_handle_get_url(s->data.handle)));
 		}
 
@@ -433,7 +450,13 @@ exec_src_script(html_content *c,
 		defer = false;
 	}
 
-	if (async) {
+	if (!async && dom_string_caseless_lwc_isequal(mimetype,
+			corestring_lwc_module)) {
+		/* module scripts are deferred unless async */
+		defer = true;
+		script_type = HTML_SCRIPT_DEFER;
+		script_cb = convert_script_defer_cb;
+	} else if (async) {
 		/* asyncronous script */
 		script_type = HTML_SCRIPT_ASYNC;
 		script_cb = convert_script_async_cb;
@@ -462,6 +485,8 @@ exec_src_script(html_content *c,
 		content_broadcast_error(&c->base, NSERROR_NOMEM, NULL);
 		return DOM_HUBBUB_NOMEM;
 	}
+	nscript->module = dom_string_caseless_lwc_isequal(mimetype,
+			corestring_lwc_module);
 
 	/* set up child fetch encoding and quirks */
 	child.charset = c->encoding;
@@ -486,6 +511,7 @@ exec_src_script(html_content *c,
 		 */
 		/* mark duff script fetch as already started */
 		nscript->already_started = true;
+		nscript->data.handle = NULL;
 		NSLOG(netsurf, INFO, "Fetch failed with error %d", ns_error);
 	} else {
 		/* update base content active fetch count */
@@ -538,6 +564,22 @@ exec_inline_script(html_content *c, dom_node *node, dom_string *mimetype)
 	nscript->data.string = script;
 	nscript->already_started = true;
 
+	if (dom_string_caseless_lwc_isequal(mimetype, corestring_lwc_module)) {
+		nscript->module = true;
+		js_exec_module(c->jsthread,
+			       (const uint8_t *)dom_string_data(script),
+			       dom_string_byte_length(script),
+			       nsurl_access(content_get_url(&c->base)));
+		return DOM_HUBBUB_OK;
+	}
+	if (dom_string_caseless_lwc_isequal(mimetype, corestring_lwc_importmap)) {
+		js_set_importmap(c->jsthread,
+				 (const uint8_t *)dom_string_data(script),
+				 dom_string_byte_length(script),
+				 nsurl_access(content_get_url(&c->base)));
+		return DOM_HUBBUB_OK;
+	}
+
 	/* ensure script handler for content type */
 	exc = dom_string_intern(mimetype, &lwcmimetype);
 	if (exc != DOM_NO_ERR) {
@@ -588,6 +630,15 @@ html_process_script(void *ctx, dom_node *node)
 
 	NSLOG(netsurf, INFO, "content %p parser %p node %p", c, c->parser,
 	      node);
+
+	{
+		/* ES modules are supported, so legacy fallbacks are not run */
+		bool nomodule = false;
+		if (dom_element_has_attribute(node, corestring_dom_nomodule,
+				&nomodule) == DOM_NO_ERR && nomodule) {
+			return DOM_HUBBUB_OK;
+		}
+	}
 
 	exc = dom_element_get_attribute(node, corestring_dom_type, &mimetype);
 	if (exc != DOM_NO_ERR || mimetype == NULL) {

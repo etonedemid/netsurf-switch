@@ -47,6 +47,9 @@ struct jsheap {
 	JSClassID node_class;
 	JSClassID event_class;
 	bool classes_ready;
+
+	int nthreads;  /* live contexts */
+	bool dying;    /* destroy requested while contexts were live */
 };
 
 struct jsthread {
@@ -68,9 +71,15 @@ struct jsthread {
 	JSValue text_proto;
 	JSValue event_proto;
 
+	/* document.readyState: 0 loading, 1 interactive, 2 complete */
+	int ready_state;
+
 	/* active setTimeout/setInterval entries */
 	struct qjs_timer *timers;
 	uint32_t next_timer_id;
+
+	/* ES module loader state (qjs_module.c) */
+	struct qjs_modules *modules;
 };
 
 /* set a script-runtime deadline, run fn-ish work, then clear it */
@@ -83,12 +92,27 @@ void qjs_dump_error(JSContext *ctx);
 /* run queued promise jobs (microtasks) */
 void qjs_run_jobs(JSContext *ctx);
 
+/* native primitives for runtime.js (qjs_native.c) */
+void qjs_native_setup(struct jsthread *thread);
+void qjs_native_closethread(struct jsthread *thread);
+
+/* ES modules (qjs_module.c) */
+void qjs_modules_setup(JSRuntime *rt);
+void qjs_modules_closethread(struct jsthread *thread);
+void qjs_modules_install(struct jsthread *thread, JSValue ns);
+
 /* DOM binding layer (qjs_dom.c) */
 nserror qjs_dom_setup(struct jsthread *thread);
 void qjs_dom_teardown(struct jsthread *thread);
 void qjs_dom_closethread(struct jsthread *thread);
 
 JSValue qjs_dom_wrap_node(struct jsthread *thread, struct dom_node *node);
+
+/** the DOM node wrapped by a JS value, or NULL */
+struct dom_node *qjs_dom_node_of(JSContext *ctx, JSValueConst v);
+
+/* <canvas> 2D context (qjs_canvas.c) */
+void qjs_canvas_install(struct jsthread *thread, JSValue ns);
 JSValue qjs_dom_wrap_event(struct jsthread *thread, struct dom_event *evt);
 
 bool qjs_dom_fire_event(struct jsthread *thread, const char *type,

@@ -5,3 +5,7 @@ netsurf/build/
 netsurf/nsfb
 switch-dist/nsfb-stripped
 *.o
+inst-native/
+build.log
+native.log
+__pycache__/

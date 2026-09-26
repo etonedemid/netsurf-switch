@@ -68,6 +68,11 @@ enum op_background_color {
 	BACKGROUND_COLOR_SET		= 0x0080
 };
 
+enum op_raw {
+	RAW_SET				= 0x0080,
+	RAW_NONE			= 0x0000
+};
+
 enum op_background_image {
 	BACKGROUND_IMAGE_URI		= 0x0080,
 	BACKGROUND_IMAGE_NONE		= 0x0000
@@ -342,7 +347,8 @@ enum op_display {
 	DISPLAY_FLEX			= 0x0010,
 	DISPLAY_INLINE_FLEX		= 0x0011,
 	DISPLAY_GRID			= 0x0012,
-	DISPLAY_INLINE_GRID		= 0x0013
+	DISPLAY_INLINE_GRID		= 0x0013,
+	DISPLAY_CONTENTS		= 0x0014
 };
 
 enum op_elevation {

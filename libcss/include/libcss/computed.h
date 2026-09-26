@@ -176,6 +176,13 @@ uint8_t css_computed_border_left_width(
 		const css_computed_style *style,
 		css_fixed *length, css_unit *unit);
 
+/**
+ * Get the value text of a raw-string property (see enum css_raw_e).
+ * \return CSS_RAW_SET with *value set, or CSS_RAW_NONE with *value NULL
+ */
+uint8_t css_computed_raw(const css_computed_style *style,
+		enum css_properties_e prop, lwc_string **value);
+
 uint8_t css_computed_background_image(
 		const css_computed_style *style,
 		lwc_string **url);

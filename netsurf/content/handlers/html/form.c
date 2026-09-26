@@ -1833,9 +1833,14 @@ form_clip_inside_select_menu(struct form_control *control,
 /* exported interface documented in netsurf/form.h */
 nserror form_select_process_selection(struct form_control *control, int item)
 {
+	nserror res;
+
 	assert(control != NULL);
 
-	return form__select_process_selection(control->html, control, item);
+	res = form__select_process_selection(control->html, control, item);
+	if (res == NSERROR_OK)
+		html_fire_change(control);
+	return res;
 }
 
 

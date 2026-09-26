@@ -37,6 +37,11 @@ struct content;
 struct box;
 struct browser_window;
 struct html_content;
+struct html_media;
+struct html_canvas;
+
+/** replaced box sized by a media or canvas element */
+#define box_has_intrinsic(b) ((b)->media != NULL || (b)->canvas != NULL)
 struct nsurl;
 struct dom_node;
 struct dom_string;
@@ -88,7 +93,8 @@ typedef enum {
 	REPLACE_DIM = 1 << 9,	/* replaced element has given dimensions */
 	IFRAME      = 1 << 10,	/* box contains an iframe */
 	CONVERT_CHILDREN = 1 << 11,  /* wanted children converting */
-	IS_REPLACED = 1 << 12	/* box is a replaced element */
+	IS_REPLACED = 1 << 12,	/* box is a replaced element */
+	CONTENTS_BOX = 1 << 13	/* display: contents; not in the tree */
 } box_flags;
 
 
@@ -433,6 +439,21 @@ struct box {
 	 * Background image for this box, or NULL if none
 	 */
 	struct hlcache_handle *background;
+
+	/**
+	 * Mask image object (mask-image), or NULL.
+	 */
+	struct hlcache_handle *mask;
+
+	/**
+	 * Media element state (<video>/<audio>), or NULL.
+	 */
+	struct html_media *media;
+
+	/**
+	 * Canvas element state (<canvas>), or NULL.
+	 */
+	struct html_canvas *canvas;
 
 
 	/**

@@ -24,10 +24,31 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <nsutils/time.h>
+#include <libcss/libcss.h>
+#include "netsurf/content_type.h"
 
 #ifdef __SWITCH__
 #include <sys/stat.h>
 #include <switch.h>
+#endif
+
+#ifdef __SWITCH__
+/* Docked output is 1080p. The page is rendered natively at that size
+ * with a 1.5x scale, so layout matches handheld 720p but text and images
+ * are sharper. Docking and undocking switch modes live. */
+static bool fb_is_docked;
+
+static bool fb_switch_docked(void)
+{
+	return appletGetOperationMode() == AppletOperationMode_Console;
+}
+
+static float fb_output_scale(void)
+{
+	return fb_is_docked ? 1.5f : 1.0f;
+}
+
+static void fb_dock_poll(void *pw);
 #endif
 
 #include <libnsfb.h>
@@ -62,6 +83,11 @@
 #include "framebuffer/clipboard.h"
 #include "framebuffer/fetch.h"
 #include "framebuffer/bitmap.h"
+#include "framebuffer/fbmedia.h"
+
+#ifdef FB_USE_FREETYPE
+extern struct gui_canvas_table *framebuffer_canvas_table;
+#endif
 #include "framebuffer/local_history.h"
 #include "framebuffer/corewindow.h"
 
@@ -511,10 +537,12 @@ process_cmdline(int argc, char** argv)
 	}
 
 #ifdef __SWITCH__
-	/* enumeration order would pick the RAM surface; force SDL2 at 720p */
+	/* enumeration order would pick the RAM surface; force SDL2 at the
+	 * console's output resolution: 1080p docked, 720p handheld */
 	fename = "sdl2";
-	fewidth = 1280;
-	feheight = 720;
+	fb_is_docked = fb_switch_docked();
+	fewidth = fb_is_docked ? 1920 : 1280;
+	feheight = fb_is_docked ? 1080 : 720;
 #endif
 
 	if ((nsoption_charp(homepage_url) != NULL) && 
@@ -964,6 +992,75 @@ static void fb_download_status(struct gui_download_window *dw)
 	fbtk_set_text(window_list->status, buf);
 }
 
+#ifdef FB_WITH_MEDIA
+/** a data: URL for a page that plays url in a media element */
+static char *fb_media_page_url(const char *url, bool audio)
+{
+	static const char hex[] = "0123456789ABCDEF";
+	const char *title = fb_media_basename(url);
+	size_t cap = strlen(url) * 6 + strlen(title) * 6 + 1024;
+	char *html = malloc(cap), *out, *o;
+	const char *p;
+	size_t n;
+
+	if (html == NULL)
+		return NULL;
+	n = snprintf(html, cap, "<!doctype html><html><head><meta charset=utf-8>"
+		"<title>%s</title></head><body style=\"margin:0;"
+		"background:#111;color:#eee;font-family:sans-serif;"
+		"text-align:center\">%s<%s src=\"",
+		title, audio ? "<p style=\"margin:2em\">" : "",
+		audio ? "audio" : "video");
+	for (p = url; *p != '\0' && n + 8 < cap; p++) {
+		if (*p == '"')
+			n += snprintf(html + n, cap - n, "&quot;");
+		else if (*p == '&')
+			n += snprintf(html + n, cap - n, "&amp;");
+		else
+			html[n++] = *p;
+	}
+	snprintf(html + n, cap - n, "\" controls autoplay style=\"%s\">"
+		"</%s></body></html>",
+		audio ? "width:80%" : "width:100%;max-height:100vh",
+		audio ? "audio" : "video");
+
+	out = malloc(strlen(html) * 3 + 32);
+	if (out == NULL) {
+		free(html);
+		return NULL;
+	}
+	o = out + sprintf(out, "data:text/html;charset=utf-8,");
+	for (p = html; *p != '\0'; p++) {
+		unsigned char c = *p;
+		if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		    (c >= '0' && c <= '9') || strchr("-_.~:/=;,!'()*", c)) {
+			*o++ = c;
+		} else {
+			*o++ = '%';
+			*o++ = hex[c >> 4];
+			*o++ = hex[c & 15];
+		}
+	}
+	*o = '\0';
+	free(html);
+	return out;
+}
+
+static void fb_media_page_cb(void *pw)
+{
+	char *page = pw;
+	nsurl *url;
+
+	if (page != NULL && window_list != NULL &&
+	    nsurl_create(page, &url) == NSERROR_OK) {
+		browser_window_navigate(window_list->bw, url, NULL,
+				BW_NAVIGATE_HISTORY, NULL, NULL, NULL);
+		nsurl_unref(url);
+	}
+	free(page);
+}
+#endif
+
 static struct gui_download_window *
 fb_download_create(download_context *ctx, struct gui_window *parent)
 {
@@ -983,6 +1080,13 @@ fb_download_create(download_context *ctx, struct gui_window *parent)
 	}
 
 	is_audio = fb_media_is_audio(mime, url_s);
+
+#ifdef FB_WITH_MEDIA
+	/* play in an inline player page (streams http and https) */
+	framebuffer_schedule(0, fb_media_page_cb,
+			fb_media_page_url(url_s, is_audio));
+	return NULL;
+#endif
 
 	if (strncmp(url_s, "https:", 6) != 0) {
 		/* ffmpeg can read http/file itself, so skip the spool */
@@ -1148,10 +1252,10 @@ static nserror set_defaults(struct nsoption_s *defaults)
 
 	/* Set defaults for absent option strings */
 #ifdef __SWITCH__
-	/* JavaScript stays off by default: Duktape's partial DOM makes
-	 * script-gated sites render blank, while their no-JS fallbacks are
-	 * usable. Users can set enable_javascript:1 in
-	 * sdmc:/switch/netsurf/Choices. */
+	/* JavaScript (QuickJS) is on by default; the Switch CPU is
+	 * slower, so runaway scripts are cut off sooner. Users can set
+	 * enable_javascript:0 in sdmc:/switch/netsurf/Choices. */
+	nsoption_set_int(script_timeout, 5);
 	nsoption_setnull_charp(ca_bundle, strdup("romfs:/res/ca-bundle.pem"));
 	nsoption_setnull_charp(cookie_file, strdup("sdmc:/switch/netsurf/Cookies"));
 	nsoption_setnull_charp(cookie_jar, strdup("sdmc:/switch/netsurf/Cookies"));
@@ -1184,6 +1288,7 @@ static bool nslog_stream_configure(FILE *fptr)
 
 	return true;
 }
+
 
 static void framebuffer_run(void)
 {
@@ -2584,6 +2689,14 @@ gui_window_create(struct browser_window *bw,
 
 	create_normal_browser_window(gw, nsoption_int(fb_furniture_size));
 
+#ifdef __SWITCH__
+	if (fb_output_scale() != 1.0f)
+		browser_window_set_scale(bw, fb_output_scale(), true);
+#else
+	if (getenv("NS_SCALE") != NULL)
+		browser_window_set_scale(bw, atof(getenv("NS_SCALE")), true);
+#endif
+
 	/* map and request redraw of gui window */
 	fbtk_set_mapping(gw->window, true);
 
@@ -2799,6 +2912,45 @@ throbber_advance(void *pw)
 	}
 }
 
+/* Headless test hook: NS_SCREENSHOT=file.ppm dumps the screen once the
+ * page has finished loading (plus NS_SCREENSHOT_DELAY ms) and exits. */
+static void fb_screenshot_cb(void *pw)
+{
+	const char *path = getenv("NS_SCREENSHOT");
+	uint8_t *ptr;
+	int stride, w, h, x, y;
+	FILE *f;
+
+	fbtk_redraw(fbtk);
+	fbtk_redraw(fbtk);
+	if (getenv("NS_DUMPBOX") != NULL && window_list != NULL) {
+		FILE *df = fopen(getenv("NS_DUMPBOX"), "w");
+		if (df != NULL) {
+			browser_window_debug_dump(window_list->bw, df,
+					CONTENT_DEBUG_RENDER);
+			fclose(df);
+		}
+	}
+	nsfb_t *nsfb = fbtk_get_nsfb(fbtk);
+	nsfb_get_geometry(nsfb, &w, &h, NULL);
+	nsfb_get_buffer(nsfb, &ptr, &stride);
+	f = fopen(path, "wb");
+	if (f != NULL) {
+		fprintf(f, "P6\n%d %d\n255\n", w, h);
+		for (y = 0; y < h; y++) {
+			uint32_t *row = (uint32_t *)(ptr + y * stride);
+			for (x = 0; x < w; x++) {
+				uint32_t p = row[x];
+				fputc((p >> 16) & 0xff, f);
+				fputc((p >> 8) & 0xff, f);
+				fputc(p & 0xff, f);
+			}
+		}
+		fclose(f);
+	}
+	fb_complete = true;
+}
+
 static void
 gui_window_start_throbber(struct gui_window *g)
 {
@@ -2806,11 +2958,38 @@ gui_window_start_throbber(struct gui_window *g)
 	framebuffer_schedule(100, throbber_advance, g);
 }
 
+/* Headless test hook: NS_CLICK=x,y clicks that point of the page once,
+ * shortly after it first finishes loading. */
+static void fb_test_click_cb(void *pw)
+{
+	int x, y;
+
+	if (window_list == NULL ||
+	    sscanf(getenv("NS_CLICK"), "%d,%d", &x, &y) != 2)
+		return;
+	browser_window_mouse_click(window_list->bw, BROWSER_MOUSE_PRESS_1,
+			x, y);
+	browser_window_mouse_click(window_list->bw, BROWSER_MOUSE_CLICK_1,
+			x, y);
+}
+
 static void
 gui_window_stop_throbber(struct gui_window *gw)
 {
+	static bool test_clicked = false;
+
 	gw->throbber_index = -1;
 	fbtk_set_bitmap(gw->throbber, &throbber0);
+
+	if (getenv("NS_CLICK") != NULL && !test_clicked) {
+		test_clicked = true;
+		const char *cd = getenv("NS_CLICK_DELAY");
+		framebuffer_schedule(cd ? atoi(cd) : 500, fb_test_click_cb, NULL);
+	}
+	if (getenv("NS_SCREENSHOT") != NULL) {
+		const char *d = getenv("NS_SCREENSHOT_DELAY");
+		framebuffer_schedule(d ? atoi(d) : 1000, fb_screenshot_cb, NULL);
+	}
 
 	fb_update_back_forward(gw);
 
@@ -2958,6 +3137,12 @@ main(int argc, char** argv)
 		.utf8 = framebuffer_utf8_table,
 		.bitmap = framebuffer_bitmap_table,
 		.layout = framebuffer_layout_table,
+#ifdef FB_WITH_MEDIA
+		.media = framebuffer_media_table,
+#endif
+#ifdef FB_USE_FREETYPE
+		.canvas = framebuffer_canvas_table,
+#endif
 	};
 
 #ifdef __SWITCH__
@@ -3019,6 +3204,14 @@ main(int argc, char** argv)
 		die("unable to process command line.\n");
 
 	nsfb = framebuffer_initialise(fename, fewidth, feheight, febpp);
+	/* media, container and viewport-unit evaluation in the CSS preprocessor */
+#ifdef __SWITCH__
+	css_preprocess_set_viewport(fewidth / fb_output_scale(),
+			feheight / fb_output_scale());
+	framebuffer_schedule(500, fb_dock_poll, NULL);
+#else
+	css_preprocess_set_viewport(fewidth, feheight);
+#endif
 	if (nsfb == NULL)
 		die("Unable to initialise framebuffer");
 
@@ -3087,6 +3280,30 @@ main(int argc, char** argv)
 
 	return 0;
 }
+
+#ifdef __SWITCH__
+/* watch for docking and undocking; switch output resolution to match */
+static void fb_dock_poll(void *pw)
+{
+	bool docked = fb_switch_docked();
+
+	if (docked != fb_is_docked && fbtk != NULL) {
+		struct gui_window *gw;
+		int w = docked ? 1920 : 1280, h = docked ? 1080 : 720;
+
+		NSLOG(netsurf, INFO, "%s: switching to %dx%d",
+				docked ? "docked" : "handheld", w, h);
+		fb_is_docked = docked;
+		gui_resize(fbtk, w, h);
+		css_preprocess_set_viewport(w / fb_output_scale(),
+				h / fb_output_scale());
+		for (gw = window_list; gw != NULL; gw = gw->next)
+			browser_window_set_scale(gw->bw, fb_output_scale(),
+					true);
+	}
+	framebuffer_schedule(500, fb_dock_poll, NULL);
+}
+#endif
 
 void gui_resize(fbtk_widget_t *root, int width, int height)
 {

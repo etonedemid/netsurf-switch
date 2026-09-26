@@ -36,6 +36,7 @@
 #include "html/html.h"
 #include "html/box.h"
 #include "html/box_inspect.h"
+#include "html/box_construct.h"
 
 #include "desktop/browser_private.h"
 #include "desktop/frames.h"
@@ -304,6 +305,24 @@ void browser_window_recalculate_iframes(struct browser_window *bw)
 
 
 /* exported function documented in desktop/frames.h */
+/* exported interface documented in desktop/frames.h */
+void browser_window_rebind_iframes(struct browser_window *bw)
+{
+	int i;
+
+	for (i = 0; i < bw->iframe_count; i++) {
+		struct box *old = bw->iframes[i].box;
+		struct box *nb;
+
+		if (old == NULL || old->node == NULL)
+			continue;
+		nb = box_for_node(old->node);
+		bw->iframes[i].box = (nb != old) ? nb : NULL;
+		if (bw->iframes[i].box != NULL)
+			bw->iframes[i].box->iframe = &bw->iframes[i];
+	}
+}
+
 nserror browser_window_destroy_iframes(struct browser_window *bw)
 {
 	int i;

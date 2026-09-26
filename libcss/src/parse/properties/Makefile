@@ -32,6 +32,8 @@ $(eval $(foreach PROP,$(AUTOGEN_PARSERS),$(call gen_prop_parser,$(PROP))))
 DIR_SOURCES :=				\
 	azimuth.c			\
 	background.c			\
+	background_image.c		\
+	raw.c				\
 	background_position.c		\
 	border.c			\
 	border_color.c			\

@@ -84,6 +84,7 @@ struct html_script {
 	bool ready_exec;
 	bool async;
 	bool defer;
+	bool module; /**< ES module script (type="module") */
 };
 
 
@@ -99,6 +100,7 @@ struct content_html_object {
 	/** Bitmap of acceptable content types */
 	content_type permitted_types;
 	bool background;  /**< This object is a background image. */
+	bool mask;        /**< This object is a mask image. */
 };
 
 

@@ -325,7 +325,8 @@ hubbub_error process_start_tag(hubbub_treebuilder *treebuilder,
 	} else if (type == AREA || type == BASEFONT || 
 			type == BGSOUND || type == BR || 
 			type == EMBED || type == IMG || type == INPUT ||
-			type == PARAM || type == SPACER || type == WBR) {
+			type == PARAM || type == SPACER || type == WBR ||
+			type == SOURCE || type == TRACK) {
 		err = reconstruct_active_formatting_list(treebuilder);
 		if (err != HUBBUB_OK)
 			return err;

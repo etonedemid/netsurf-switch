@@ -750,3 +750,78 @@ struct gui_utf8_table *framebuffer_utf8_table = NULL;
  * c-basic-offset:8
  * End:
  */
+
+/* ------------------------------------------------------------------ */
+/* Canvas text                                                        */
+/* ------------------------------------------------------------------ */
+
+#include "netsurf/canvas.h"
+
+static bool fb_canvas_fill_text(uint8_t *px, int w, int h, size_t stride,
+		const struct plot_font_style *fs, int x, int y,
+		const char *text, size_t len, uint32_t colour, float alpha,
+		const int clip[4])
+{
+	size_t nxt = 0;
+	int cr = colour & 0xff, cg = (colour >> 8) & 0xff;
+	int cb = (colour >> 16) & 0xff;
+	int cx0 = clip[0] > 0 ? clip[0] : 0, cy0 = clip[1] > 0 ? clip[1] : 0;
+	int cx1 = clip[2] < w ? clip[2] : w, cy1 = clip[3] < h ? clip[3] : h;
+
+	while (nxt < len) {
+		uint32_t ucs4 = utf8_to_ucs4(text + nxt, len - nxt);
+		FT_Glyph glyph;
+
+		nxt = utf8_next(text, len, nxt);
+		glyph = fb_getglyph(fs, ucs4);
+		if (glyph == NULL)
+			continue;
+		if (glyph->format == FT_GLYPH_FORMAT_BITMAP) {
+			FT_BitmapGlyph bg = (FT_BitmapGlyph)glyph;
+			int gx = x + bg->left, gy = y - bg->top, row, col;
+			for (row = 0; row < (int)bg->bitmap.rows; row++) {
+				int py = gy + row;
+				if (py < cy0 || py >= cy1)
+					continue;
+				for (col = 0; col < (int)bg->bitmap.width; col++) {
+					int pxx = gx + col, cov;
+					uint8_t *d;
+					float sa, da, oa;
+					if (pxx < cx0 || pxx >= cx1)
+						continue;
+					if (bg->bitmap.pixel_mode ==
+							FT_PIXEL_MODE_MONO)
+						cov = (bg->bitmap.buffer[row *
+							bg->bitmap.pitch + col / 8] &
+							(0x80 >> (col & 7))) ? 255 : 0;
+					else
+						cov = bg->bitmap.buffer[row *
+							bg->bitmap.pitch + col];
+					if (cov == 0)
+						continue;
+					d = px + py * stride + pxx * 4;
+					sa = cov / 255.0f * alpha;
+					da = d[3] / 255.0f;
+					oa = sa + da * (1 - sa);
+					if (oa <= 0)
+						continue;
+					d[0] = (uint8_t)((cr * sa + d[0] * da *
+						(1 - sa)) / oa + 0.5f);
+					d[1] = (uint8_t)((cg * sa + d[1] * da *
+						(1 - sa)) / oa + 0.5f);
+					d[2] = (uint8_t)((cb * sa + d[2] * da *
+						(1 - sa)) / oa + 0.5f);
+					d[3] = (uint8_t)(oa * 255 + 0.5f);
+				}
+			}
+		}
+		x += glyph->advance.x >> 16;
+	}
+	return true;
+}
+
+static struct gui_canvas_table canvas_table = {
+	.fill_text = fb_canvas_fill_text,
+};
+
+struct gui_canvas_table *framebuffer_canvas_table = &canvas_table;

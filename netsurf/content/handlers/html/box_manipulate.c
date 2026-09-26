@@ -148,6 +148,9 @@ box_create(css_select_results *styles,
 	box->usemap = NULL;
 	box->id = id;
 	box->background = NULL;
+	box->mask = NULL;
+	box->media = NULL;
+	box->canvas = NULL;
 	box->object = NULL;
 	box->object_params = NULL;
 	box->iframe = NULL;

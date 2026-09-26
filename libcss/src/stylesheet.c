@@ -10,6 +10,7 @@
 #include <stdarg.h>
 
 #include "stylesheet.h"
+#include "parse/preprocess.h"
 #include "bytecode/bytecode.h"
 #include "parse/language.h"
 #include "parse/mq.h"
@@ -264,6 +265,7 @@ css_error css_stylesheet_destroy(css_stylesheet *sheet)
 		free(sheet->title);
 
 	free(sheet->url);
+	free(sheet->pp_data);
 
 	for (r = sheet->rule_list; r != NULL; r = s) {
 		s = r->next;
@@ -320,7 +322,22 @@ css_error css_stylesheet_append_data(css_stylesheet *sheet,
 	if (sheet->parser == NULL)
 		return CSS_INVALID;
 
-	return css__parser_parse_chunk(sheet->parser, data, len);
+	/* Buffer the data: the preprocessor needs the whole sheet */
+	if (sheet->pp_len + len > sheet->pp_cap) {
+		size_t cap = sheet->pp_cap ? sheet->pp_cap : 4096;
+		uint8_t *d;
+		while (cap < sheet->pp_len + len)
+			cap *= 2;
+		d = realloc(sheet->pp_data, cap);
+		if (d == NULL)
+			return CSS_NOMEM;
+		sheet->pp_data = d;
+		sheet->pp_cap = cap;
+	}
+	memcpy(sheet->pp_data + sheet->pp_len, data, len);
+	sheet->pp_len += len;
+
+	return CSS_OK;
 }
 
 /**
@@ -341,6 +358,27 @@ css_error css_stylesheet_data_done(css_stylesheet *sheet)
 
 	if (sheet->parser == NULL)
 		return CSS_INVALID;
+
+	if (sheet->pp_len > 0) {
+		uint8_t *pdata = NULL;
+		size_t plen = 0;
+
+		error = css__preprocess(sheet->pp_data, sheet->pp_len,
+				sheet->inline_style, &pdata, &plen);
+		if (error == CSS_OK) {
+			error = css__parser_parse_chunk(sheet->parser,
+					pdata, plen);
+			free(pdata);
+		} else if (error == CSS_INVALID) {
+			error = css__parser_parse_chunk(sheet->parser,
+					sheet->pp_data, sheet->pp_len);
+		}
+		free(sheet->pp_data);
+		sheet->pp_data = NULL;
+		sheet->pp_len = sheet->pp_cap = 0;
+		if (error != CSS_OK && error != CSS_NEEDDATA)
+			return error;
+	}
 
 	error = css__parser_completed(sheet->parser);
 	if (error != CSS_OK)

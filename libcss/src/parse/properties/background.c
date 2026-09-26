@@ -7,6 +7,7 @@
 
 #include <assert.h>
 #include <string.h>
+#include <strings.h>
 
 #include "bytecode/bytecode.h"
 #include "bytecode/opcodes.h"
@@ -45,6 +46,12 @@ css_error css__parse_background(css_language *c,
 	css_style * image_style;
 	css_style * position_style;
 	css_style * repeat_style;
+	css_style *scratch_style = NULL;
+	css_style *size_style = NULL;
+	bool size = true;
+	bool l_attachment = true, l_image = true, l_position = true;
+	bool l_repeat = true, l_size = true;
+	int layer = 0;
 	enum flag_value flag_value;
 
 	/* Firstly, handle inherit */
@@ -118,8 +125,20 @@ css_error css__parse_background(css_language *c,
 		return error;
 	}
 
-	/* Attempt to parse the various longhand properties */
+	error = css__stylesheet_style_create(c->sheet, &scratch_style);
+	if (error != CSS_OK)
+		goto css__parse_background_cleanup;
+	error = css__stylesheet_style_create(c->sheet, &size_style);
+	if (error != CSS_OK)
+		goto css__parse_background_cleanup;
+
+	/* Attempt to parse the various longhand properties.
+	 *
+	 * Only the first layer of a multi-layer background is kept (the
+	 * colour may only appear in the final layer); later layers are
+	 * parsed into a scratch style to validate and skip them. */
 	do {
+		bool first = (layer == 0);
 		prev_ctx = *ctx;
 		error = CSS_OK;
 
@@ -128,29 +147,64 @@ css_error css__parse_background(css_language *c,
 			goto css__parse_background_cleanup;
 		}
 
-		/* Try each property parser in turn, but only if we
-		 * haven't already got a value for this property.
-		 */
-		if ((attachment) &&
+		if (tokenIsChar(token, ',')) {
+			parserutils_vector_iterate(vector, ctx);
+			layer++;
+			l_attachment = l_image = l_position = l_repeat = true;
+			l_size = true;
+		} else if (tokenIsChar(token, '/') && !l_position && l_size) {
+			/* <position> / <size> */
+			parserutils_vector_iterate(vector, ctx);
+			error = css__parse_background_size_value(c, vector,
+					ctx, first ? size_style : scratch_style);
+			if (error == CSS_OK) {
+				l_size = false;
+				if (first)
+					size = false;
+			}
+		} else if (token->type == CSS_TOKEN_IDENT &&
+				(lwc_string_length(token->idata) == 11 ||
+				 lwc_string_length(token->idata) == 10) &&
+				(strncasecmp(lwc_string_data(token->idata),
+					"padding-box", 11) == 0 ||
+				 strncasecmp(lwc_string_data(token->idata),
+					"border-box", 10) == 0 ||
+				 strncasecmp(lwc_string_data(token->idata),
+					"content-box", 11) == 0)) {
+			/* background-origin / background-clip: ignored */
+			parserutils_vector_iterate(vector, ctx);
+		} else if ((l_attachment) &&
 		    (error = css__parse_background_attachment(c, vector, ctx,
-					    attachment_style)) == CSS_OK) {
-			attachment = false;
+				    first ? attachment_style : scratch_style))
+				== CSS_OK) {
+			l_attachment = false;
+			if (first)
+				attachment = false;
 		} else if ((color) &&
 			   (error = css__parse_background_color(c, vector, ctx,
 					    color_style)) == CSS_OK) {
 			color = false;
-		} else if ((image) &&
-			   (error = css__parse_background_image(c, vector, ctx,
-					    image_style)) == CSS_OK) {
-			image = false;
-		} else if ((position) &&
+		} else if ((l_image) &&
+			   (error = css__parse_background_image_layer(c,
+				    vector, ctx, first ? image_style :
+				    scratch_style)) == CSS_OK) {
+			l_image = false;
+			if (first)
+				image = false;
+		} else if ((l_position) &&
 			   (error = css__parse_background_position(c, vector, ctx,
-					position_style)) == CSS_OK) {
-			position = false;
-		} else if ((repeat) &&
+				    first ? position_style : scratch_style))
+				== CSS_OK) {
+			l_position = false;
+			if (first)
+				position = false;
+		} else if ((l_repeat) &&
 			   (error = css__parse_background_repeat(c, vector, ctx,
-					repeat_style)) == CSS_OK) {
-			repeat = false;
+				    first ? repeat_style : scratch_style))
+				== CSS_OK) {
+			l_repeat = false;
+			if (first)
+				repeat = false;
 		}
 
 		if (error == CSS_OK) {
@@ -162,6 +216,13 @@ css_error css__parse_background(css_language *c,
 			token = NULL;
 		}
 	} while (*ctx != prev_ctx && token != NULL);
+
+	if (size) {
+		error = css__stylesheet_style_appendOPV(size_style,
+				CSS_PROP_BACKGROUND_SIZE, 0, RAW_NONE);
+		if (error != CSS_OK)
+			goto css__parse_background_cleanup;
+	}
 
 	if (attachment) {
 		error = css__stylesheet_style_appendOPV(attachment_style,
@@ -221,8 +282,16 @@ css_error css__parse_background(css_language *c,
 		goto css__parse_background_cleanup;
 
 	error = css__stylesheet_merge_style(result, repeat_style);
+	if (error != CSS_OK)
+		goto css__parse_background_cleanup;
+
+	error = css__stylesheet_merge_style(result, size_style);
 
 css__parse_background_cleanup:
+	if (scratch_style != NULL)
+		css__stylesheet_style_destroy(scratch_style);
+	if (size_style != NULL)
+		css__stylesheet_style_destroy(size_style);
 	css__stylesheet_style_destroy(attachment_style);
 	css__stylesheet_style_destroy(color_style);
 	css__stylesheet_style_destroy(image_style);

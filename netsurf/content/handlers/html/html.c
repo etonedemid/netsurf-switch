@@ -59,6 +59,9 @@
 
 #include "html/html.h"
 #include "html/private.h"
+#include "html/media.h"
+#include "html/canvas.h"
+#include "html/rebuild.h"
 #include "html/dom_event.h"
 #include "html/css.h"
 #include "html/object.h"
@@ -128,6 +131,17 @@ bool fire_generic_dom_event(dom_string *type, dom_node *target,
 	result = fire_dom_event(evt, target);
 	dom_event_unref(evt);
 	return result;
+}
+
+/* Exported interface, see private.h */
+void html_fire_change(struct form_control *control)
+{
+	if (control == NULL || control->node == NULL)
+		return;
+	fire_generic_dom_event(corestring_dom_input, control->node,
+			true, false);
+	fire_generic_dom_event(corestring_dom_change, control->node,
+			true, false);
 }
 
 /* Exported interface, see html_internal.h */
@@ -281,6 +295,25 @@ static void html_box_convert_done(html_content *c, bool success)
 	dom_node_unref(html);
 }
 
+static void html_fire_load_cb(void *p)
+{
+	html_content *htmlc = p;
+
+	if (htmlc->jsthread != NULL && !htmlc->aborted) {
+		/* the page is laid out and its objects have arrived */
+		js_fire_event(htmlc->jsthread, "load", htmlc->document, NULL);
+	}
+}
+
+/* exported interface documented in html/private.h */
+void html_fire_load_event(html_content *htmlc)
+{
+	if (htmlc->load_fired)
+		return;
+	htmlc->load_fired = true;
+	guit->misc->schedule(0, html_fire_load_cb, htmlc);
+}
+
 /* Documented in html_internal.h */
 nserror
 html_proceed_to_done(html_content *html)
@@ -289,6 +322,7 @@ html_proceed_to_done(html_content *html)
 	case CONTENT_STATUS_READY:
 		if (html->base.active == 0) {
 			content_set_done(&html->base);
+			html_fire_load_event(html);
 			return NSERROR_OK;
 		}
 		break;
@@ -364,8 +398,10 @@ void html_finish_conversion(html_content *htmlc)
 	 * would break badly.
 	 */
 	if (htmlc->select_ctx != NULL) {
-		NSLOG(netsurf, INFO,
-				"Ignoring style change: NS layout is static.");
+		/* a stylesheet arrived or changed after the document was
+		 * laid out: restyle and rebuild */
+		htmlc->rebuild_styles_changed = true;
+		html_rebuild_schedule(htmlc);
 		return;
 	}
 
@@ -382,7 +418,8 @@ void html_finish_conversion(html_content *htmlc)
 	 * the currentTarget set to the Window object)
 	 */
 	if (htmlc->jsthread != NULL) {
-		js_fire_event(htmlc->jsthread, "load", htmlc->document, NULL);
+		js_fire_event(htmlc->jsthread, "DOMContentLoaded",
+				htmlc->document, NULL);
 	}
 
 	/* convert dom tree to box tree */
@@ -1034,6 +1071,7 @@ static void html_stop(struct content *c)
 		 * in the READY state, transition to the DONE state. */
 		if (c->status == CONTENT_STATUS_READY && c->active == 0) {
 			content_set_done(c);
+			html_fire_load_event(htmlc);
 		}
 
 		break;
@@ -1219,6 +1257,9 @@ static void html_destroy(struct content *c)
 
 	selection_destroy(html->sel);
 
+	html_media_destroy_all(html);
+	html_canvas_destroy_all(html);
+
 	/* Destroy forms */
 	for (f = html->forms; f != NULL; f = g) {
 		g = f->prev;
@@ -1237,6 +1278,9 @@ static void html_destroy(struct content *c)
 	/* At this point we can be moderately confident the JS is offline
 	 * so we destroy the JS thread.
 	 */
+	html_rebuild_cancel(html);
+	guit->misc->schedule(-1, html_fire_load_cb, html);
+
 	if (html->jsthread != NULL) {
 		js_destroythread(html->jsthread);
 		html->jsthread = NULL;
@@ -1369,6 +1413,9 @@ static nserror html_close(struct content *c)
 
 	/* remove all object references from the html content */
 	html_object_close_objects(htmlc);
+
+	/* stop media playback */
+	html_media_pause_all(htmlc);
 
 	if (htmlc->jsthread != NULL) {
 		/* Close, but do not destroy (yet) the JS thread */

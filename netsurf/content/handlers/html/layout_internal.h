@@ -68,6 +68,23 @@ bool layout_flex(
 		int available_width,
 		html_content *content);
 
+/**
+ * Is a (flex container type) box actually a grid container?
+ */
+bool layout_grid_is_grid(const struct box *b);
+
+/**
+ * Lay out a grid container.
+ */
+bool layout_grid(struct box *grid, int available_width,
+		html_content *content);
+
+/**
+ * Compute a grid container's intrinsic widths from its items'.
+ */
+void layout_grid_minmax(struct box *grid, const html_content *content,
+		int *min, int *max);
+
 typedef uint8_t (*css_len_func)(
 		const css_computed_style *style,
 		css_fixed *length, css_unit *unit);
@@ -139,7 +156,7 @@ static inline bool lh__box_is_inline_content(const struct box *b)
 /** Layout helper: Check whether box is an object. */
 static inline bool lh__box_is_object(const struct box *b)
 {
-	return b->object ||
+	return b->object || box_has_intrinsic(b) ||
 	       (b->flags & (IFRAME | REPLACE_DIM));
 }
 

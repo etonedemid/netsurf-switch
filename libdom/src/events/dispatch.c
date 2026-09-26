@@ -31,6 +31,10 @@ dom_exception __dom_dispatch_node_change_event(dom_document *doc,
 	dom_string *type = NULL;
 	dom_exception err;
 
+	/* nothing to dispatch to (e.g. a detached node) */
+	if (et == NULL || doc == NULL)
+		return DOM_NO_ERR;
+
 	err = _dom_mutation_event_create(&evt);
 	if (err != DOM_NO_ERR)
 		return err;
@@ -76,6 +80,10 @@ dom_exception __dom_dispatch_node_change_document_event(dom_document *doc,
 	struct dom_mutation_event *evt;
 	dom_string *type = NULL;
 	dom_exception err;
+
+	/* nothing to dispatch to (e.g. a detached node) */
+	if (et == NULL || doc == NULL)
+		return DOM_NO_ERR;
 
 	err = _dom_mutation_event_create(&evt);
 	if (err != DOM_NO_ERR)
@@ -128,6 +136,10 @@ dom_exception __dom_dispatch_attr_modified_event(dom_document *doc,
 	dom_string *type = NULL;
 	dom_exception err;
 
+	/* nothing to dispatch to (e.g. a detached node) */
+	if (et == NULL || doc == NULL)
+		return DOM_NO_ERR;
+
 	err = _dom_mutation_event_create(&evt);
 	if (err != DOM_NO_ERR)
 		return err;
@@ -172,6 +184,10 @@ dom_exception __dom_dispatch_characterdata_modified_event(
 	dom_string *type = NULL;
 	dom_exception err;
 
+	/* nothing to dispatch to (e.g. a detached node) */
+	if (et == NULL || doc == NULL)
+		return DOM_NO_ERR;
+
 	err = _dom_mutation_event_create(&evt);
 	if (err != DOM_NO_ERR)
 		return err;
@@ -207,6 +223,10 @@ dom_exception __dom_dispatch_subtree_modified_event(dom_document *doc,
 	struct dom_mutation_event *evt;
 	dom_string *type = NULL;
 	dom_exception err;
+
+	/* e.g. character data changed in a node with no parent */
+	if (et == NULL || doc == NULL)
+		return DOM_NO_ERR;
 
 	err = _dom_mutation_event_create(&evt);
 	if (err != DOM_NO_ERR)

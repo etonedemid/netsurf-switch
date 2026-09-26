@@ -68,6 +68,9 @@
 #include "html/form_internal.h"
 #include "html/layout.h"
 #include "html/layout_internal.h"
+#include "html/media.h"
+#include "css/css_fx.h"
+#include "html/canvas.h"
 #include "html/table.h"
 
 /** Array of per-side access functions for computed style margins. */
@@ -116,6 +119,35 @@ static void layout_minmax_block(
 		const struct gui_layout_table *font_func,
 		const html_content *content);
 
+/** intrinsic width of a replaced box's object or media element */
+static int layout_intrinsic_width(struct box *box)
+{
+	int w = 0, h = 0;
+
+	if (box->object != NULL)
+		return content_get_width(box->object);
+	if (box->media != NULL)
+		html_media_intrinsic(box->media, &w, &h);
+	else if (box->canvas != NULL)
+		html_canvas_intrinsic(box->canvas, &w, &h);
+	return w;
+}
+
+/** intrinsic height of a replaced box's object or media element */
+static int layout_intrinsic_height(struct box *box)
+{
+	int w = 0, h = 0;
+
+	if (box->object != NULL)
+		return content_get_height(box->object);
+	if (box->media != NULL)
+		html_media_intrinsic(box->media, &w, &h);
+	else if (box->canvas != NULL)
+		html_canvas_intrinsic(box->canvas, &w, &h);
+	return h;
+}
+
+
 /**
  * Compute the size of replaced boxes with auto dimensions, according to
  * content.
@@ -136,15 +168,15 @@ layout_get_object_dimensions(struct box *box,
 			     int min_width, int max_width,
 			     int min_height, int max_height)
 {
-	assert(box->object != NULL);
+	assert(box->object != NULL || box_has_intrinsic(box));
 	assert(width != NULL && height != NULL);
 
 	if (*width == AUTO && *height == AUTO) {
 		/* No given dimensions */
 
 		bool scaled = false;
-		int intrinsic_width = content_get_width(box->object);
-		int intrinsic_height = content_get_height(box->object);
+		int intrinsic_width = layout_intrinsic_width(box);
+		int intrinsic_height = layout_intrinsic_height(box);
 
 		/* use intrinsic dimensions */
 		*width = intrinsic_width;
@@ -186,8 +218,8 @@ layout_get_object_dimensions(struct box *box,
 	} else if (*width == AUTO) {
 		/* Have given height; width is calculated from the given height
 		 * and ratio of intrinsic dimensions */
-		int intrinsic_width = content_get_width(box->object);
-		int intrinsic_height = content_get_height(box->object);
+		int intrinsic_width = layout_intrinsic_width(box);
+		int intrinsic_height = layout_intrinsic_height(box);
 
 		if (intrinsic_height != 0)
 			*width = (*height * intrinsic_width) /
@@ -203,8 +235,8 @@ layout_get_object_dimensions(struct box *box,
 	} else if (*height == AUTO) {
 		/* Have given width; height is calculated from the given width
 		 * and ratio of intrinsic dimensions */
-		int intrinsic_width = content_get_width(box->object);
-		int intrinsic_height = content_get_height(box->object);
+		int intrinsic_width = layout_intrinsic_width(box);
+		int intrinsic_height = layout_intrinsic_height(box);
 
 		if (min_width >  0 && min_width > *width)
 			*width = min_width;
@@ -535,7 +567,7 @@ layout_minmax_line(struct box *first,
 		assert(b->style);
 		font_plot_style_from_css(&content->unit_len_ctx, b->style, &fstyle);
 
-		if (b->type == BOX_INLINE && !b->object &&
+		if (b->type == BOX_INLINE && !b->object && !box_has_intrinsic(b) &&
 				!(b->flags & REPLACE_DIM) &&
 				!(b->flags & IFRAME)) {
 			fixed = frac = 0;
@@ -700,8 +732,8 @@ layout_minmax_line(struct box *first,
 			height = AUTO;
 		}
 
-		if (b->object || (b->flags & REPLACE_DIM)) {
-			if (b->object) {
+		if (b->object || box_has_intrinsic(b) || (b->flags & REPLACE_DIM)) {
+			if (b->object || box_has_intrinsic(b)) {
 				int temp_height = height;
 				layout_get_object_dimensions(b,
 						&width, &temp_height,
@@ -950,6 +982,9 @@ static void layout_minmax_block(
 		}
 
 		block->flags |= HAS_HEIGHT;
+	} else if (box_has_intrinsic(block)) {
+		min = max = layout_intrinsic_width(block);
+		block->flags |= HAS_HEIGHT;
 	} else if (block->flags & IFRAME) {
 		/** \todo do we need to know the min/max width of the iframe's
 		 * content? */
@@ -1001,6 +1036,9 @@ static void layout_minmax_block(
 			}
 
 			if (lh__box_is_flex_container(block) &&
+			    layout_grid_is_grid(block)) {
+				/* computed from all items below */
+			} else if (lh__box_is_flex_container(block) &&
 			    lh__flex_main_is_horizontal(block)) {
 				if (block->style != NULL &&
 				    css_computed_flex_wrap(block->style) ==
@@ -1022,6 +1060,11 @@ static void layout_minmax_block(
 			if (child_has_height)
 				block->flags |= HAS_HEIGHT;
 		}
+	}
+
+	if (lh__box_is_flex_container(block) && layout_grid_is_grid(block) &&
+			block->object == NULL) {
+		layout_grid_minmax(block, content, &min, &max);
 	}
 
 	if (max < min) {
@@ -1174,6 +1217,7 @@ layout_next_margin_block(const css_unit_ctx *unit_len_ctx,
 			/* Check whether box is the box current margin collapses
 			 * to */
 			if (box->flags & MAKE_HEIGHT ||
+					box->type == BOX_FLEX ||
 					box->border[TOP].width ||
 					box->padding[TOP] ||
 					(box->style &&
@@ -1499,8 +1543,8 @@ layout_block_find_dimensions(const css_unit_ctx *unit_len_ctx,
 			style, &width, &height, &max_width, &min_width,
 			&max_height, &min_height, margin, padding, border);
 
-	if (box->object && !(box->flags & REPLACE_DIM) &&
-			content_get_type(box->object) != CONTENT_HTML) {
+	if (((box->object && content_get_type(box->object) != CONTENT_HTML) ||
+			box_has_intrinsic(box)) && !(box->flags & REPLACE_DIM)) {
 		/* block-level replaced element, see 10.3.4 and 10.6.2 */
 		layout_get_object_dimensions(box, &width, &height,
 				min_width, max_width, min_height, max_height);
@@ -2146,6 +2190,9 @@ bool layout_table(
 }
 
 
+static int line_height(const css_unit_ctx *unit_len_ctx,
+		const css_computed_style *style);
+
 /**
  * Manimpulate box height according to CSS min-height and max-height properties
  *
@@ -2184,6 +2231,44 @@ static bool layout_apply_minmax_height(
 		/* Box is an inline block */
 		assert(box->parent->parent);
 		containing_block = box->parent->parent;
+	}
+
+	if (box->style && box->object == NULL && !box_has_intrinsic(box)) {
+		css_fixed hv = 0;
+		css_unit hu = CSS_UNIT_PX;
+		float ratio;
+		int lines;
+
+		/* aspect-ratio gives auto heights a minimum from the width */
+		if (css_computed_height(box->style, &hv, &hu) ==
+				CSS_HEIGHT_AUTO && box->width > 0 &&
+		    box->width != AUTO &&
+		    cssfx_aspect_ratio(box->style, &ratio)) {
+			h = (int)(box->width / ratio + 0.5f);
+			if (css_computed_box_sizing(box->style) ==
+					CSS_BOX_SIZING_BORDER_BOX)
+				h -= box->padding[TOP] + box->padding[BOTTOM] +
+					box->border[TOP].width +
+					box->border[BOTTOM].width -
+					(box->padding[LEFT] + box->padding[RIGHT] +
+					 box->border[LEFT].width +
+					 box->border[RIGHT].width) / ratio;
+			if (h > box->height) {
+				box->height = h;
+				updated = true;
+			}
+		}
+
+		/* line-clamp limits the height to whole lines */
+		lines = cssfx_line_clamp(box->style);
+		if (lines > 0 && css_computed_overflow_y(box->style) !=
+				CSS_OVERFLOW_VISIBLE) {
+			h = lines * line_height(unit_len_ctx, box->style);
+			if (h < box->height) {
+				box->height = h;
+				updated = true;
+			}
+		}
 	}
 
 	if (box->style) {
@@ -2463,8 +2548,8 @@ layout_float_find_dimensions(
 		padding[BOTTOM] += scrollbar_width_x;
 	}
 
-	if (box->object && !(box->flags & REPLACE_DIM) &&
-			content_get_type(box->object) != CONTENT_HTML) {
+	if (((box->object && content_get_type(box->object) != CONTENT_HTML) ||
+			box_has_intrinsic(box)) && !(box->flags & REPLACE_DIM)) {
 		/* Floating replaced element, with intrinsic width or height.
 		 * See 10.3.6 and 10.6.2 */
 		layout_get_object_dimensions(box, &width, &height,
@@ -2933,7 +3018,7 @@ layout_line(struct box *first,
 				&max_height, &min_height,
 				NULL, NULL, NULL);
 
-		if (b->object && !(b->flags & REPLACE_DIM)) {
+		if ((b->object || box_has_intrinsic(b)) && !(b->flags & REPLACE_DIM)) {
 			layout_get_object_dimensions(b, &b->width, &b->height,
 					min_width, max_width,
 					min_height, max_height);
@@ -3041,7 +3126,7 @@ layout_line(struct box *first,
 			}
 
 			space_before = space_after;
-			if (b->object || b->flags & REPLACE_DIM ||
+			if (b->object || box_has_intrinsic(b) || b->flags & REPLACE_DIM ||
 					b->flags & IFRAME)
 				space_after = 0;
 			else if (b->text || b->type == BOX_INLINE_END) {
@@ -3196,7 +3281,7 @@ layout_line(struct box *first,
 		if (!no_wrap &&
 		    (split_box->type == BOX_INLINE ||
 		     split_box->type == BOX_TEXT) &&
-		    !split_box->object &&
+		    !split_box->object && !box_has_intrinsic(split_box) &&
 		    !(split_box->flags & REPLACE_DIM) &&
 		    !(split_box->flags & IFRAME) &&
 		    !split_box->gadget && split_box->text) {
@@ -3538,6 +3623,12 @@ bool layout_block_context(
 		int temp_width = block->width;
 		if (!layout_block_object(block))
 			return false;
+		layout_get_object_dimensions(block, &temp_width,
+				&block->height, INT_MIN, INT_MAX,
+				INT_MIN, INT_MAX);
+		return true;
+	} else if (box_has_intrinsic(block)) {
+		int temp_width = block->width;
 		layout_get_object_dimensions(block, &temp_width,
 				&block->height, INT_MIN, INT_MAX,
 				INT_MIN, INT_MAX);
