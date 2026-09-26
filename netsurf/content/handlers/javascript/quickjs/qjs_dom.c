@@ -141,9 +141,22 @@ void qjs_dump_error(JSContext *ctx)
 	JSValue exc = JS_GetException(ctx);
 	const char *msg = JS_ToCString(ctx, exc);
 
-	NSLOG(jserrors, WARNING, "Uncaught error in JS: %s",
-	      msg ? msg : "(unprintable)");
+	const char *stack = NULL;
+	JSValue sv = JS_UNDEFINED;
 
+	if (JS_IsObject(exc)) {
+		sv = JS_GetPropertyStr(ctx, exc, "stack");
+		if (JS_IsString(sv))
+			stack = JS_ToCString(ctx, sv);
+	}
+
+	NSLOG(jserrors, WARNING, "Uncaught error in JS: %s%s%.300s",
+	      msg ? msg : "(unprintable)", stack ? " at " : "",
+	      stack ? stack : "");
+
+	if (stack != NULL)
+		JS_FreeCString(ctx, stack);
+	JS_FreeValue(ctx, sv);
 	if (msg != NULL)
 		JS_FreeCString(ctx, msg);
 	JS_FreeValue(ctx, exc);
@@ -2567,11 +2580,13 @@ qjs_event_ctor(JSContext *ctx, JSValueConst new_target,
 static const char qjs_setup_script[] =
 "(function(){\n"
 "  globalThis.__ns_addl = function(o, t, f) {\n"
+"    if (o == null) o = globalThis;\n"
 "    var m = o.__ns_listeners || (o.__ns_listeners = {});\n"
 "    var a = m[t] || (m[t] = []);\n"
 "    if (a.indexOf(f) < 0) a.push(f);\n"
 "  };\n"
 "  globalThis.__ns_reml = function(o, t, f) {\n"
+"    if (o == null) o = globalThis;\n"
 "    var m = o.__ns_listeners; if (!m) return;\n"
 "    var a = m[t]; if (!a) return;\n"
 "    var i = a.indexOf(f); if (i >= 0) a.splice(i, 1);\n"
@@ -2862,11 +2877,21 @@ nserror qjs_dom_setup(struct jsthread *t)
 	JS_FreeValue(ctx, setup);
 
 	/* the web platform runtime (runtime.js) */
-	setup = JS_Eval(ctx, (const char *)runtime_js, runtime_js_len,
-			"<netsurf-runtime>", JS_EVAL_TYPE_GLOBAL);
-	if (JS_IsException(setup))
-		qjs_dump_error(ctx);
-	JS_FreeValue(ctx, setup);
+	{
+		/* the embedded array is not NUL terminated */
+		char *src = malloc(runtime_js_len + 1);
+		if (src != NULL) {
+			memcpy(src, runtime_js, runtime_js_len);
+			src[runtime_js_len] = '\0';
+			setup = JS_Eval(ctx, src, runtime_js_len,
+					"<netsurf-runtime>",
+					JS_EVAL_TYPE_GLOBAL);
+			free(src);
+			if (JS_IsException(setup))
+				qjs_dump_error(ctx);
+			JS_FreeValue(ctx, setup);
+		}
+	}
 	qjs_run_jobs(ctx);
 
 	{

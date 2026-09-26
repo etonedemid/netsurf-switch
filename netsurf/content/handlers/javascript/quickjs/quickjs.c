@@ -144,6 +144,7 @@ nserror js_newheap(int timeout, jsheap **heap_out)
 		JS_SetDumpFlags(heap->rt, JS_DUMP_LEAKS);
 	JS_SetInterruptHandler(heap->rt, qjs_interrupt_handler, heap);
 	JS_SetRuntimeOpaque(heap->rt, heap);
+	qjs_modules_setup(heap->rt);
 	heap->timeout_s = timeout;
 
 	*heap_out = heap;
@@ -203,6 +204,7 @@ nserror js_closethread(jsthread *thread)
 	if (thread == NULL)
 		return NSERROR_OK;
 	thread->closed = true;
+	qjs_modules_closethread(thread);
 	qjs_dom_closethread(thread);
 	return NSERROR_OK;
 }
@@ -216,6 +218,7 @@ void js_destroythread(jsthread *thread)
 
 	thread->closed = true;
 	heap = thread->heap;
+	qjs_modules_closethread(thread);
 	qjs_dom_teardown(thread);
 	JS_FreeContext(thread->ctx);
 	free(thread);
@@ -227,22 +230,98 @@ void js_destroythread(jsthread *thread)
 	}
 }
 
+/**
+ * Copy script source into a NUL terminated UTF-8 buffer.
+ *
+ * Invalid UTF-8 is taken to be Windows-1252/Latin-1 and converted.
+ */
+static char *qjs_source_utf8(const uint8_t *txt, size_t len, size_t *outlen)
+{
+	size_t i = 0, o = 0;
+	bool valid = true;
+	char *out;
+
+	/* skip a UTF-8 byte order mark */
+	if (len >= 3 && txt[0] == 0xef && txt[1] == 0xbb && txt[2] == 0xbf) {
+		txt += 3;
+		len -= 3;
+	}
+
+	while (i < len) {
+		uint8_t c = txt[i];
+		size_t n;
+		if (c < 0x80) {
+			i++;
+			continue;
+		}
+		n = (c & 0xe0) == 0xc0 ? 2 : (c & 0xf0) == 0xe0 ? 3 :
+			(c & 0xf8) == 0xf0 ? 4 : 0;
+		if (n == 0 || i + n > len) {
+			valid = false;
+			break;
+		}
+		for (size_t k = 1; k < n; k++) {
+			if ((txt[i + k] & 0xc0) != 0x80) {
+				valid = false;
+				break;
+			}
+		}
+		if (!valid)
+			break;
+		i += n;
+	}
+
+	if (valid) {
+		out = malloc(len + 1);
+		if (out == NULL)
+			return NULL;
+		memcpy(out, txt, len);
+		out[len] = '\0';
+		*outlen = len;
+		return out;
+	}
+
+	out = malloc(len * 2 + 1);
+	if (out == NULL)
+		return NULL;
+	for (i = 0; i < len; i++) {
+		uint8_t c = txt[i];
+		if (c < 0x80) {
+			out[o++] = c;
+		} else {
+			out[o++] = 0xc0 | (c >> 6);
+			out[o++] = 0x80 | (c & 0x3f);
+		}
+	}
+	out[o] = '\0';
+	*outlen = o;
+	return out;
+}
+
 /* exported interface documented in js.h */
 bool js_exec(jsthread *thread, const uint8_t *txt, size_t txtlen,
 	     const char *name)
 {
 	JSValue v;
 	bool ok = true;
+	char *buf;
+	size_t buflen;
 
 	if (thread == NULL || thread->closed || txt == NULL || txtlen == 0)
 		return false;
 
+	/* QuickJS needs NUL terminated UTF-8 source */
+	buf = qjs_source_utf8(txt, txtlen, &buflen);
+	if (buf == NULL)
+		return false;
+
 	qjs_deadline_start(thread);
 
-	v = JS_Eval(thread->ctx, (const char *)txt, txtlen,
+	v = JS_Eval(thread->ctx, buf, buflen,
 		    name ? name : "<script>", JS_EVAL_TYPE_GLOBAL);
 
 	qjs_deadline_stop(thread);
+	free(buf);
 
 	if (JS_IsException(v)) {
 		qjs_dump_error(thread->ctx);

@@ -77,6 +77,9 @@ struct jsthread {
 	/* active setTimeout/setInterval entries */
 	struct qjs_timer *timers;
 	uint32_t next_timer_id;
+
+	/* ES module loader state (qjs_module.c) */
+	struct qjs_modules *modules;
 };
 
 /* set a script-runtime deadline, run fn-ish work, then clear it */
@@ -92,6 +95,11 @@ void qjs_run_jobs(JSContext *ctx);
 /* native primitives for runtime.js (qjs_native.c) */
 void qjs_native_setup(struct jsthread *thread);
 void qjs_native_closethread(struct jsthread *thread);
+
+/* ES modules (qjs_module.c) */
+void qjs_modules_setup(JSRuntime *rt);
+void qjs_modules_closethread(struct jsthread *thread);
+void qjs_modules_install(struct jsthread *thread, JSValue ns);
 
 /* DOM binding layer (qjs_dom.c) */
 nserror qjs_dom_setup(struct jsthread *thread);

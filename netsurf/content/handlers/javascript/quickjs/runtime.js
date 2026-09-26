@@ -28,6 +28,20 @@ function accessor(obj, name, get, set) {
 }
 function hasOwn(o, k) { return Object.prototype.hasOwnProperty.call(o, k); }
 function isElement(n) { return n != null && n.nodeType === 1; }
+
+/* dynamic import(): module sources rewrite `import(` to this so the
+ * (possibly computed) specifier's graph is fetched before importing */
+var modulePrefetch = ns.modulePrefetch;
+Object.defineProperty(global, '__ns_import', {
+	value: function (base, spec) {
+		var s;
+		try { s = String(spec); } catch (e) { return Promise.reject(e); }
+		return modulePrefetch(base, s).then(function (url) {
+			return import(url);
+		});
+	},
+	configurable: false, enumerable: false, writable: false
+});
 function toStr(v) { return v === undefined || v === null ? '' : String(v); }
 
 /* ------------------------------------------------------------------ */

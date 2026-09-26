@@ -1220,6 +1220,7 @@ void qjs_native_setup(struct jsthread *t)
 
 	JS_SetPropertyFunctionList(ctx, ns, nat_funcs,
 			sizeof(nat_funcs) / sizeof(nat_funcs[0]));
+	qjs_modules_install(t, ns);
 	JS_DefinePropertyValueStr(ctx, global, "__ns", ns,
 			JS_PROP_CONFIGURABLE);
 	JS_FreeValue(ctx, global);

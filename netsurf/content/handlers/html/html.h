@@ -84,6 +84,7 @@ struct html_script {
 	bool ready_exec;
 	bool async;
 	bool defer;
+	bool module; /**< ES module script (type="module") */
 };
 
 

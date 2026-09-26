@@ -129,6 +129,18 @@ void js_destroythread(jsthread *thread);
 bool js_exec(jsthread *thread, const uint8_t *txt, size_t txtlen, const char *name);
 
 /**
+ * execute an ES module script (loading its imports first)
+ *
+ * \param url  the module's URL, used to resolve relative imports
+ */
+bool js_exec_module(jsthread *thread, const uint8_t *txt, size_t txtlen, const char *url);
+
+/**
+ * set the document's import map (script type="importmap")
+ */
+void js_set_importmap(jsthread *thread, const uint8_t *txt, size_t txtlen, const char *base);
+
+/**
  * fire an event at a dom node
  */
 bool js_fire_event(jsthread *thread, const char *type, struct dom_document *doc, struct dom_node *target);

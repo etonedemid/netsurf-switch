@@ -16,7 +16,8 @@ $(OBJROOT)/quickjs/runtime.js.inc: content/handlers/javascript/quickjs/runtime.j
 	$(Q)$(TOOLROOT)/xxd -i $< $@.tmp
 	$(Q)sed -e 's/content_handlers_javascript_quickjs_runtime_js/runtime_js/' $@.tmp > $@
 
-S_JAVASCRIPT += content.c quickjs/quickjs.c quickjs/qjs_dom.c quickjs/qjs_native.c
+S_JAVASCRIPT += content.c quickjs/quickjs.c quickjs/qjs_dom.c quickjs/qjs_native.c \
+	quickjs/qjs_module.c
 
 # the engine library comes from the port's local prefix (libquickjs.a);
 # repeat -lm after it since this lands late in the link line
