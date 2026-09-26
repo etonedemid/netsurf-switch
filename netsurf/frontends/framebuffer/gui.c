@@ -32,6 +32,25 @@
 #include <switch.h>
 #endif
 
+#ifdef __SWITCH__
+/* Docked output is 1080p. The page is rendered natively at that size
+ * with a 1.5x scale, so layout matches handheld 720p but text and images
+ * are sharper. Docking and undocking switch modes live. */
+static bool fb_is_docked;
+
+static bool fb_switch_docked(void)
+{
+	return appletGetOperationMode() == AppletOperationMode_Console;
+}
+
+static float fb_output_scale(void)
+{
+	return fb_is_docked ? 1.5f : 1.0f;
+}
+
+static void fb_dock_poll(void *pw);
+#endif
+
 #include <libnsfb.h>
 #include <libnsfb_plot.h>
 #include <libnsfb_event.h>
@@ -514,10 +533,12 @@ process_cmdline(int argc, char** argv)
 	}
 
 #ifdef __SWITCH__
-	/* enumeration order would pick the RAM surface; force SDL2 at 720p */
+	/* enumeration order would pick the RAM surface; force SDL2 at the
+	 * console's output resolution: 1080p docked, 720p handheld */
 	fename = "sdl2";
-	fewidth = 1280;
-	feheight = 720;
+	fb_is_docked = fb_switch_docked();
+	fewidth = fb_is_docked ? 1920 : 1280;
+	feheight = fb_is_docked ? 1080 : 720;
 #endif
 
 	if ((nsoption_charp(homepage_url) != NULL) && 
@@ -1263,6 +1284,7 @@ static bool nslog_stream_configure(FILE *fptr)
 
 	return true;
 }
+
 
 static void framebuffer_run(void)
 {
@@ -2663,6 +2685,14 @@ gui_window_create(struct browser_window *bw,
 
 	create_normal_browser_window(gw, nsoption_int(fb_furniture_size));
 
+#ifdef __SWITCH__
+	if (fb_output_scale() != 1.0f)
+		browser_window_set_scale(bw, fb_output_scale(), true);
+#else
+	if (getenv("NS_SCALE") != NULL)
+		browser_window_set_scale(bw, atof(getenv("NS_SCALE")), true);
+#endif
+
 	/* map and request redraw of gui window */
 	fbtk_set_mapping(gw->window, true);
 
@@ -3168,7 +3198,13 @@ main(int argc, char** argv)
 
 	nsfb = framebuffer_initialise(fename, fewidth, feheight, febpp);
 	/* media, container and viewport-unit evaluation in the CSS preprocessor */
+#ifdef __SWITCH__
+	css_preprocess_set_viewport(fewidth / fb_output_scale(),
+			feheight / fb_output_scale());
+	framebuffer_schedule(500, fb_dock_poll, NULL);
+#else
 	css_preprocess_set_viewport(fewidth, feheight);
+#endif
 	if (nsfb == NULL)
 		die("Unable to initialise framebuffer");
 
@@ -3237,6 +3273,30 @@ main(int argc, char** argv)
 
 	return 0;
 }
+
+#ifdef __SWITCH__
+/* watch for docking and undocking; switch output resolution to match */
+static void fb_dock_poll(void *pw)
+{
+	bool docked = fb_switch_docked();
+
+	if (docked != fb_is_docked && fbtk != NULL) {
+		struct gui_window *gw;
+		int w = docked ? 1920 : 1280, h = docked ? 1080 : 720;
+
+		NSLOG(netsurf, INFO, "%s: switching to %dx%d",
+				docked ? "docked" : "handheld", w, h);
+		fb_is_docked = docked;
+		gui_resize(fbtk, w, h);
+		css_preprocess_set_viewport(w / fb_output_scale(),
+				h / fb_output_scale());
+		for (gw = window_list; gw != NULL; gw = gw->next)
+			browser_window_set_scale(gw->bw, fb_output_scale(),
+					true);
+	}
+	framebuffer_schedule(500, fb_dock_poll, NULL);
+}
+#endif
 
 void gui_resize(fbtk_widget_t *root, int width, int height)
 {
