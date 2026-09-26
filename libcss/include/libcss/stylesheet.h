@@ -143,6 +143,23 @@ css_error css_stylesheet_append_data(css_stylesheet *sheet,
 		const uint8_t *data, size_t len);
 css_error css_stylesheet_data_done(css_stylesheet *sheet);
 
+/**
+ * Parse a CSS colour value from text (CSS Color 4/5 syntax).
+ *
+ * \param text     pointer to text, advanced past the colour on success
+ * \param current  value of currentColor (ARGB)
+ * \param out      resulting ARGB colour
+ * \return true on success
+ */
+bool css_parse_color_text(const char **text, css_color current,
+		css_color *out);
+
+/**
+ * Set the viewport used by the stylesheet preprocessor to evaluate
+ * media, container and support conditions and viewport units.
+ */
+void css_preprocess_set_viewport(int width, int height);
+
 css_error css_stylesheet_next_pending_import(css_stylesheet *parent,
 		lwc_string **url);
 css_error css_stylesheet_register_import(css_stylesheet *parent,

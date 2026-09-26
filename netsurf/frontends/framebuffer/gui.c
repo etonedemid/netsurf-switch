@@ -24,6 +24,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <nsutils/time.h>
+#include <libcss/libcss.h>
 
 #ifdef __SWITCH__
 #include <sys/stat.h>
@@ -3055,6 +3056,8 @@ main(int argc, char** argv)
 		die("unable to process command line.\n");
 
 	nsfb = framebuffer_initialise(fename, fewidth, feheight, febpp);
+	/* media, container and viewport-unit evaluation in the CSS preprocessor */
+	css_preprocess_set_viewport(fewidth, feheight);
 	if (nsfb == NULL)
 		die("Unable to initialise framebuffer");
 
