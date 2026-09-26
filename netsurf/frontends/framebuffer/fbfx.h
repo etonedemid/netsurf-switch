@@ -12,6 +12,8 @@
 #ifndef NETSURF_FB_FBFX_H
 #define NETSURF_FB_FBFX_H
 
+#include <stdint.h>
+
 struct redraw_context;
 struct rect;
 struct plot_radii;
@@ -41,6 +43,10 @@ nserror fbfx_tint(const struct redraw_context *ctx, bool enable, colour c);
  * \return false if tint mode is off (plot normally)
  */
 bool fbfx_tint_bitmap(struct nsfb_s *bm, int x, int y, int width, int height);
+
+/** Blit an RGBX (bytes R,G,B,X) image scaled into dst. */
+void fbfx_blit_rgbx(const struct redraw_context *ctx, const uint32_t *px,
+		int w, int h, const struct rect *dst, const struct rect *clip);
 
 nserror fbfx_path(const struct redraw_context *ctx,
 		const plot_style_t *pstyle, const float *p, unsigned int n,

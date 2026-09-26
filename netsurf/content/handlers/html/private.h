@@ -225,6 +225,9 @@ typedef struct html_content {
 	/** display: contents boxes (outside the tree, chained by next) */
 	struct box *contents_boxes;
 
+	/** media elements (<video>/<audio>) */
+	struct html_media *media_elements;
+
 	/** hashes of scoped shadow stylesheets already added */
 	uint32_t *shadow_css_hashes;
 	unsigned int shadow_css_count;

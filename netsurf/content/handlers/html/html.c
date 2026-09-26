@@ -59,6 +59,7 @@
 
 #include "html/html.h"
 #include "html/private.h"
+#include "html/media.h"
 #include "html/rebuild.h"
 #include "html/dom_event.h"
 #include "html/css.h"
@@ -1255,6 +1256,8 @@ static void html_destroy(struct content *c)
 
 	selection_destroy(html->sel);
 
+	html_media_destroy_all(html);
+
 	/* Destroy forms */
 	for (f = html->forms; f != NULL; f = g) {
 		g = f->prev;
@@ -1408,6 +1411,9 @@ static nserror html_close(struct content *c)
 
 	/* remove all object references from the html content */
 	html_object_close_objects(htmlc);
+
+	/* stop media playback */
+	html_media_pause_all(htmlc);
 
 	if (htmlc->jsthread != NULL) {
 		/* Close, but do not destroy (yet) the JS thread */

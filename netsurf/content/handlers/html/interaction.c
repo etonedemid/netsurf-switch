@@ -57,6 +57,7 @@
 #include "html/font.h"
 #include "html/form_internal.h"
 #include "html/private.h"
+#include "html/media.h"
 #include "html/imagemap.h"
 #include "html/interaction.h"
 
@@ -594,6 +595,13 @@ struct mouse_action_state {
 	/** non html object */
 	hlcache_handle *object;
 
+	/** media element (<video>/<audio>) */
+	struct {
+		struct box *box;
+		int box_x;
+		int box_y;
+	} media;
+
 	/** iframe */
 	struct browser_window *iframe;
 
@@ -717,6 +725,12 @@ get_mouse_action_node(html_content *html,
 
 		if (box->iframe) {
 			man->iframe = box->iframe;
+		}
+
+		if (box->media) {
+			man->media.box = box;
+			man->media.box_x = box_x;
+			man->media.box_y = box_y;
 		}
 
 		if (box->href) {
@@ -1359,6 +1373,15 @@ mouse_action_drag_none(html_content *html,
 
 	} else if (mas.gadget.control) {
 		res = gadget_mouse_action(html, mouse, x, y, &mas);
+
+	} else if (mas.media.box != NULL &&
+		   html_media_mouse(mas.media.box,
+				x - mas.media.box_x -
+					mas.media.box->padding[LEFT],
+				y - mas.media.box_y -
+					mas.media.box->padding[TOP],
+				mouse)) {
+		mas.result.pointer = BROWSER_POINTER_POINT;
 
 	} else if ((mas.object != NULL) && (mouse & BROWSER_MOUSE_MOD_2)) {
 

@@ -51,6 +51,7 @@
 #include "content/textsearch.h"
 #include "css/utils.h"
 #include "css/css_fx.h"
+#include "html/media.h"
 #include "desktop/selection.h"
 #include "desktop/print.h"
 #include "desktop/scrollbar.h"
@@ -2104,7 +2105,11 @@ static bool html_redraw_box_contents(const html_content *html,
 		tag_type = DOM_HTML_ELEMENT_TYPE__UNKNOWN;
 	}
 
-	if (box->object && width != 0 && height != 0) {
+	if (box->media != NULL && width != 0 && height != 0) {
+		if (!html_media_redraw(box, x + padding_left, y + padding_top,
+				width, height, &r, scale, ctx))
+			return false;
+	} else if (box->object && width != 0 && height != 0) {
 		struct content_redraw_data obj_data;
 
 		x_scrolled = x - scrollbar_get_offset(box->scroll_x) * scale;

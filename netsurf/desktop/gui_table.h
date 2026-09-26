@@ -37,6 +37,7 @@ struct gui_utf8_table;
 struct gui_search_table;
 struct gui_search_web_table;
 struct gui_llcache_table;
+struct gui_media_table;
 struct gui_bitmap_table;
 struct gui_layout_table;
 
@@ -141,6 +142,13 @@ struct netsurf_table {
 	 * default implementation.
 	 */
 	struct gui_llcache_table *llcache;
+
+	/**
+	 * Media playback table (HTML video and audio elements).
+	 *
+	 * Optional; NULL means media elements show their poster only.
+	 */
+	struct gui_media_table *media;
 
 	/**
 	 * Bitmap table.

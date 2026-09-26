@@ -51,6 +51,7 @@
 #include "html/box_construct.h"
 #include "html/box_special.h"
 #include "html/inline_svg.h"
+#include "html/media.h"
 #include "html/box_textarea.h"
 #include "html/form_internal.h"
 
@@ -1924,6 +1925,11 @@ convert_special_elements(dom_node *node,
 
 	case DOM_HTML_ELEMENT_TYPE_TEXTAREA:
 		res = box_textarea(node, content, box, convert_children);
+		break;
+
+	case DOM_HTML_ELEMENT_TYPE_VIDEO:
+	case DOM_HTML_ELEMENT_TYPE_AUDIO:
+		res = html_media_box(content, node, box, convert_children);
 		break;
 
 	default:

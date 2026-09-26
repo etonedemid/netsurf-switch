@@ -1177,3 +1177,61 @@ bool fbfx_tint_bitmap(struct nsfb_s *bm, int x, int y, int width, int height)
 	}
 	return true;
 }
+
+/* ------------------------------------------------------------------ */
+/* Video frame blit                                                   */
+/* ------------------------------------------------------------------ */
+
+/* exported interface documented in fbfx.h */
+void fbfx_blit_rgbx(const struct redraw_context *ctx, const uint32_t *px,
+		int w, int h, const struct rect *dst, const struct rect *clip)
+{
+	struct fx_surface s;
+	int dw = dst->x1 - dst->x0, dh = dst->y1 - dst->y0;
+	int x0, y0, x1, y1, x, y;
+	int *xmap;
+
+	if (w <= 0 || h <= 0 || dw <= 0 || dh <= 0 || !fx_get_surface(&s))
+		return;
+	x0 = dst->x0 > s.cx0 ? dst->x0 : s.cx0;
+	y0 = dst->y0 > s.cy0 ? dst->y0 : s.cy0;
+	x1 = dst->x1 < s.cx1 ? dst->x1 : s.cx1;
+	y1 = dst->y1 < s.cy1 ? dst->y1 : s.cy1;
+	if (clip != NULL) {
+		if (clip->x0 > x0) x0 = clip->x0;
+		if (clip->y0 > y0) y0 = clip->y0;
+		if (clip->x1 < x1) x1 = clip->x1;
+		if (clip->y1 < y1) y1 = clip->y1;
+	}
+	if (x0 >= x1 || y0 >= y1)
+		return;
+
+	xmap = malloc((x1 - x0) * sizeof(int));
+	if (xmap == NULL)
+		return;
+	for (x = x0; x < x1; x++)
+		xmap[x - x0] = (int)((int64_t)(x - dst->x0) * w / dw);
+
+	for (y = y0; y < y1; y++) {
+		const uint32_t *srow = px + (size_t)((int64_t)(y - dst->y0) *
+				h / dh) * w;
+		uint32_t *drow = s.ptr + y * s.stride + x0;
+		int n = x1 - x0;
+		if (s.bgr) {
+			/* source bytes R,G,B,X match 0xXXBBGGRR */
+			if (w == dw) {
+				memcpy(drow, srow + xmap[0], n * 4);
+			} else {
+				for (x = 0; x < n; x++)
+					drow[x] = srow[xmap[x]] | 0xff000000u;
+			}
+		} else {
+			for (x = 0; x < n; x++) {
+				uint32_t p = srow[xmap[x]];
+				drow[x] = 0xff000000u | ((p & 0xff) << 16) |
+					(p & 0xff00) | ((p >> 16) & 0xff);
+			}
+		}
+	}
+	free(xmap);
+}

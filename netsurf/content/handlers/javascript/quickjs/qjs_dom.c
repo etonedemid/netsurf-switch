@@ -43,6 +43,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #include <dom/dom.h>
 
@@ -55,6 +56,7 @@
 #include "netsurf/misc.h"
 #include "desktop/gui_internal.h"
 #include "html/private.h"
+#include "html/media.h"
 
 #include "javascript/js.h"
 #include "javascript/quickjs/qjs_private.h"
@@ -1423,14 +1425,8 @@ static const JSCFunctionListEntry qjs_element_funcs[] = {
 /* ------------------------------------------------------------------ */
 /* HTMLMediaElement (<audio>/<video>) and Audio()                     */
 /*                                                                    */
-/* NetSurf has no media element rendering, so these are a thin shim:  */
-/* play() hands the resolved src to the browser as a navigation,      */
-/* which NetSurf routes to its download path, where the Switch        */
-/* frontend's media intercept plays it fullscreen (spooling https to  */
-/* the SD first).  The other members are enough state for typical     */
-/* player scripts (paused/volume/currentTime) not to throw before     */
-/* they reach play().  Playback itself is fire-and-forget: NetSurf's  */
-/* player is modal, so timeupdate/ended events are not delivered.     */
+/* Backed by html/media.c: inline playback through the frontend's   */
+/* media table, with HTMLMediaElement events fired on the node.       */
 /* ------------------------------------------------------------------ */
 
 static bool qjs_node_is_media(dom_node *node)
@@ -1486,30 +1482,51 @@ static JSValue qjs_resolved_promise(JSContext *ctx)
 	return promise;
 }
 
+/* the element's media state (created on demand, e.g. new Audio()) */
+static struct html_media *qjs_media(JSContext *ctx, JSValueConst this_val)
+{
+	struct jsthread *t = qjs_thread(ctx);
+	dom_node *node = qjs_this_node(ctx, this_val);
+
+	if (t == NULL || node == NULL || t->closed || t->htmlc == NULL)
+		return NULL;
+	return html_media_for_node(t->htmlc, node, true);
+}
+
+static JSValue qjs_rejected_promise(JSContext *ctx, const char *msg)
+{
+	JSValue funcs[2];
+	JSValue promise = JS_NewPromiseCapability(ctx, funcs);
+	JSValue err, r;
+
+	if (JS_IsException(promise))
+		return JS_UNDEFINED;
+	err = JS_NewError(ctx);
+	JS_SetPropertyStr(ctx, err, "name",
+			JS_NewString(ctx, "NotSupportedError"));
+	JS_SetPropertyStr(ctx, err, "message", JS_NewString(ctx, msg));
+	r = JS_Call(ctx, funcs[1], JS_UNDEFINED, 1, &err);
+	JS_FreeValue(ctx, r);
+	JS_FreeValue(ctx, err);
+	JS_FreeValue(ctx, funcs[0]);
+	JS_FreeValue(ctx, funcs[1]);
+	return promise;
+}
+
 static JSValue
 media_play(JSContext *ctx, JSValueConst this_val,
 	   int argc, JSValueConst *argv)
 {
-	struct jsthread *t = qjs_thread(ctx);
-	dom_node *node = qjs_this_node(ctx, this_val);
-	nsurl *url;
+	struct html_media *m = qjs_media(ctx, this_val);
+	struct html_media_state st;
 
-	if (t == NULL || node == NULL || t->closed)
+	if (m == NULL)
 		return qjs_resolved_promise(ctx);
-
-	url = qjs_media_src_url(t, node);
-	if (url != NULL) {
-		NSLOG(netsurf, INFO, "media play(): %s", nsurl_access(url));
-		/* NetSurf's download intercept plays it; the frontend
-		 * defers the actual player launch off this call stack */
-		browser_window_navigate(t->bw, url, NULL,
-					BW_NAVIGATE_DOWNLOAD, NULL, NULL,
-					NULL);
-		nsurl_unref(url);
-		JS_SetPropertyStr(ctx, this_val, "__ns_paused", JS_FALSE);
-	} else {
-		NSLOG(netsurf, INFO, "media play(): no src");
-	}
+	html_media_play(m);
+	html_media_get_state(m, &st);
+	if (st.error || st.src == NULL)
+		return qjs_rejected_promise(ctx,
+				"The element has no supported sources.");
 	return qjs_resolved_promise(ctx);
 }
 
@@ -1517,8 +1534,10 @@ static JSValue
 media_pause(JSContext *ctx, JSValueConst this_val,
 	    int argc, JSValueConst *argv)
 {
-	/* the modal player is exited with B/Plus, not from script */
-	JS_SetPropertyStr(ctx, this_val, "__ns_paused", JS_TRUE);
+	struct html_media *m = qjs_media(ctx, this_val);
+
+	if (m != NULL)
+		html_media_pause(m);
 	return JS_UNDEFINED;
 }
 
@@ -1526,6 +1545,10 @@ static JSValue
 media_load(JSContext *ctx, JSValueConst this_val,
 	   int argc, JSValueConst *argv)
 {
+	struct html_media *m = qjs_media(ctx, this_val);
+
+	if (m != NULL)
+		html_media_load(m);
 	return JS_UNDEFINED;
 }
 
@@ -1534,20 +1557,33 @@ media_canPlayType(JSContext *ctx, JSValueConst this_val,
 		  int argc, JSValueConst *argv)
 {
 	const char *type;
-	JSValue ret;
+	const char *r = "";
 
 	if (argc < 1)
 		return JS_NewString(ctx, "");
 	type = JS_ToCString(ctx, argv[0]);
 	if (type == NULL)
 		return JS_NewString(ctx, "");
-	/* ffmpeg-backed player is broad; claim "maybe" for audio/video */
-	ret = JS_NewString(ctx,
-			   (strncmp(type, "audio/", 6) == 0 ||
-			    strncmp(type, "video/", 6) == 0) ?
-				   "maybe" : "");
+	if (strcasestr(type, "mpegurl") != NULL ||
+	    strcasestr(type, "dash") != NULL) {
+		r = "";
+	} else if (strncasecmp(type, "video/mp4", 9) == 0 ||
+		   strncasecmp(type, "video/webm", 10) == 0 ||
+		   strncasecmp(type, "audio/mpeg", 10) == 0 ||
+		   strncasecmp(type, "audio/mp4", 9) == 0 ||
+		   strncasecmp(type, "audio/ogg", 9) == 0 ||
+		   strncasecmp(type, "audio/webm", 10) == 0 ||
+		   strncasecmp(type, "audio/wav", 9) == 0 ||
+		   strncasecmp(type, "audio/aac", 9) == 0 ||
+		   strncasecmp(type, "audio/flac", 10) == 0 ||
+		   strncasecmp(type, "video/ogg", 9) == 0) {
+		r = "probably";
+	} else if (strncasecmp(type, "audio/", 6) == 0 ||
+		   strncasecmp(type, "video/", 6) == 0) {
+		r = "maybe";
+	}
 	JS_FreeCString(ctx, type);
-	return ret;
+	return JS_NewString(ctx, r);
 }
 
 static JSValue
@@ -1571,72 +1607,152 @@ media_get_src(JSContext *ctx, JSValueConst this_val)
 static JSValue
 media_set_src(JSContext *ctx, JSValueConst this_val, JSValueConst v)
 {
-	return qjs_attr_set(ctx, this_val, corestring_dom_src, v);
+	JSValue r = qjs_attr_set(ctx, this_val, corestring_dom_src, v);
+	struct html_media *m = qjs_media(ctx, this_val);
+
+	if (m != NULL)
+		html_media_load(m);
+	return r;
 }
 
 static JSValue
-media_get_paused(JSContext *ctx, JSValueConst this_val)
+media_get_currentSrc(JSContext *ctx, JSValueConst this_val)
 {
-	JSValue p = JS_GetPropertyStr(ctx, this_val, "__ns_paused");
+	struct html_media *m = qjs_media(ctx, this_val);
+	struct html_media_state st;
 
-	if (JS_IsUndefined(p)) {
-		JS_FreeValue(ctx, p);
-		return JS_TRUE; /* default state is paused */
-	}
-	return p;
+	if (m == NULL)
+		return JS_NewString(ctx, "");
+	html_media_get_state(m, &st);
+	return JS_NewString(ctx, st.src ? st.src : "");
 }
 
-/* simple JS-backed scalar property with a default */
-#define MEDIA_STORED_PROP(getname, setname, storekey, defexpr)		\
-static JSValue								\
-getname(JSContext *ctx, JSValueConst this_val)				\
+#define MEDIA_GETTER(fname, expr, dflt)					\
+static JSValue fname(JSContext *ctx, JSValueConst this_val)		\
 {									\
-	JSValue v = JS_GetPropertyStr(ctx, this_val, storekey);		\
-	if (JS_IsUndefined(v)) {					\
-		JS_FreeValue(ctx, v);					\
-		return (defexpr);					\
-	}								\
-	return v;							\
-}									\
-static JSValue								\
-setname(JSContext *ctx, JSValueConst this_val, JSValueConst v)		\
-{									\
-	JS_SetPropertyStr(ctx, this_val, storekey, JS_DupValue(ctx, v));	\
-	return JS_UNDEFINED;						\
+	struct html_media *m = qjs_media(ctx, this_val);		\
+	struct html_media_state st;					\
+	if (m == NULL)							\
+		return (dflt);						\
+	html_media_get_state(m, &st);					\
+	return (expr);							\
 }
 
-MEDIA_STORED_PROP(media_get_volume, media_set_volume, "__ns_volume",
-		  JS_NewFloat64(ctx, 1.0))
-MEDIA_STORED_PROP(media_get_currentTime, media_set_currentTime,
-		  "__ns_curtime", JS_NewFloat64(ctx, 0.0))
-MEDIA_STORED_PROP(media_get_muted, media_set_muted, "__ns_muted",
-		  JS_FALSE)
-MEDIA_STORED_PROP(media_get_loop, media_set_loop, "__ns_loop", JS_FALSE)
-MEDIA_STORED_PROP(media_get_autoplay, media_set_autoplay, "__ns_autoplay",
-		  JS_FALSE)
+MEDIA_GETTER(media_get_paused, JS_NewBool(ctx, st.paused), JS_TRUE)
+MEDIA_GETTER(media_get_ended, JS_NewBool(ctx, st.ended), JS_FALSE)
+MEDIA_GETTER(media_get_muted, JS_NewBool(ctx, st.muted), JS_FALSE)
+MEDIA_GETTER(media_get_loop, JS_NewBool(ctx, st.loop), JS_FALSE)
+MEDIA_GETTER(media_get_volume, JS_NewFloat64(ctx, st.volume),
+		JS_NewFloat64(ctx, 1))
+MEDIA_GETTER(media_get_currentTime, JS_NewFloat64(ctx, st.current_time),
+		JS_NewFloat64(ctx, 0))
+MEDIA_GETTER(media_get_duration, JS_NewFloat64(ctx, st.duration),
+		JS_NewFloat64(ctx, NAN))
+MEDIA_GETTER(media_get_readyState, JS_NewInt32(ctx, st.ready_state),
+		JS_NewInt32(ctx, 0))
+MEDIA_GETTER(media_get_networkState, JS_NewInt32(ctx, st.network_state),
+		JS_NewInt32(ctx, 0))
+MEDIA_GETTER(media_get_videoWidth, JS_NewInt32(ctx, st.video_width),
+		JS_NewInt32(ctx, 0))
+MEDIA_GETTER(media_get_videoHeight, JS_NewInt32(ctx, st.video_height),
+		JS_NewInt32(ctx, 0))
 
 static JSValue
-media_get_duration(JSContext *ctx, JSValueConst this_val)
+media_get_error(JSContext *ctx, JSValueConst this_val)
 {
-	return JS_NewFloat64(ctx, 0.0); /* unknown; NaN upsets some scripts */
+	struct html_media *m = qjs_media(ctx, this_val);
+	struct html_media_state st;
+	JSValue e;
+
+	if (m == NULL)
+		return JS_NULL;
+	html_media_get_state(m, &st);
+	if (!st.error)
+		return JS_NULL;
+	e = JS_NewObject(ctx);
+	JS_SetPropertyStr(ctx, e, "code", JS_NewInt32(ctx, 4));
+	JS_SetPropertyStr(ctx, e, "message",
+			JS_NewString(ctx, "MEDIA_ERR_SRC_NOT_SUPPORTED"));
+	return e;
 }
 
 static JSValue
-media_get_ended(JSContext *ctx, JSValueConst this_val)
+media_set_currentTime(JSContext *ctx, JSValueConst this_val, JSValueConst v)
 {
-	return JS_FALSE;
+	struct html_media *m = qjs_media(ctx, this_val);
+	double t = 0;
+
+	if (m != NULL && JS_ToFloat64(ctx, &t, v) == 0 && isfinite(t))
+		html_media_seek(m, t);
+	return JS_UNDEFINED;
 }
 
 static JSValue
-media_get_readyState(JSContext *ctx, JSValueConst this_val)
+media_set_volume(JSContext *ctx, JSValueConst this_val, JSValueConst v)
 {
-	return JS_NewInt32(ctx, 4); /* HAVE_ENOUGH_DATA */
+	struct html_media *m = qjs_media(ctx, this_val);
+	struct html_media_state st;
+	double vol = 1;
+
+	if (m == NULL || JS_ToFloat64(ctx, &vol, v) != 0)
+		return JS_UNDEFINED;
+	if (!(vol >= 0 && vol <= 1))
+		return JS_ThrowRangeError(ctx, "volume out of range");
+	html_media_get_state(m, &st);
+	html_media_set_volume(m, vol, st.muted);
+	return JS_UNDEFINED;
 }
 
 static JSValue
-media_get_networkState(JSContext *ctx, JSValueConst this_val)
+media_set_muted(JSContext *ctx, JSValueConst this_val, JSValueConst v)
 {
-	return JS_NewInt32(ctx, 1); /* NETWORK_IDLE */
+	struct html_media *m = qjs_media(ctx, this_val);
+	struct html_media_state st;
+
+	if (m == NULL)
+		return JS_UNDEFINED;
+	html_media_get_state(m, &st);
+	html_media_set_volume(m, st.volume, JS_ToBool(ctx, v));
+	return JS_UNDEFINED;
+}
+
+static JSValue
+media_set_loop(JSContext *ctx, JSValueConst this_val, JSValueConst v)
+{
+	struct html_media *m = qjs_media(ctx, this_val);
+
+	if (m != NULL)
+		html_media_set_loop(m, JS_ToBool(ctx, v));
+	return JS_UNDEFINED;
+}
+
+static JSValue
+media_get_autoplay(JSContext *ctx, JSValueConst this_val)
+{
+	JSValue v = JS_GetPropertyStr(ctx, this_val, "__ns_autoplay");
+	if (JS_IsUndefined(v))
+		return JS_FALSE;
+	return v;
+}
+
+static JSValue
+media_set_autoplay(JSContext *ctx, JSValueConst this_val, JSValueConst v)
+{
+	JS_SetPropertyStr(ctx, this_val, "__ns_autoplay",
+			JS_NewBool(ctx, JS_ToBool(ctx, v)));
+	return JS_UNDEFINED;
+}
+
+static JSValue
+media_get_playbackRate(JSContext *ctx, JSValueConst this_val)
+{
+	return JS_NewFloat64(ctx, 1.0);
+}
+
+static JSValue
+media_set_playbackRate(JSContext *ctx, JSValueConst this_val, JSValueConst v)
+{
+	return JS_UNDEFINED; /* only normal speed is supported */
 }
 
 static const JSCFunctionListEntry qjs_media_funcs[] = {
@@ -1645,7 +1761,7 @@ static const JSCFunctionListEntry qjs_media_funcs[] = {
 	JS_CFUNC_DEF("load", 0, media_load),
 	JS_CFUNC_DEF("canPlayType", 1, media_canPlayType),
 	JS_CGETSET_DEF("src", media_get_src, media_set_src),
-	JS_CGETSET_DEF("currentSrc", media_get_src, NULL),
+	JS_CGETSET_DEF("currentSrc", media_get_currentSrc, NULL),
 	JS_CGETSET_DEF("paused", media_get_paused, NULL),
 	JS_CGETSET_DEF("volume", media_get_volume, media_set_volume),
 	JS_CGETSET_DEF("currentTime", media_get_currentTime,
@@ -1657,6 +1773,13 @@ static const JSCFunctionListEntry qjs_media_funcs[] = {
 	JS_CGETSET_DEF("ended", media_get_ended, NULL),
 	JS_CGETSET_DEF("readyState", media_get_readyState, NULL),
 	JS_CGETSET_DEF("networkState", media_get_networkState, NULL),
+	JS_CGETSET_DEF("videoWidth", media_get_videoWidth, NULL),
+	JS_CGETSET_DEF("videoHeight", media_get_videoHeight, NULL),
+	JS_CGETSET_DEF("error", media_get_error, NULL),
+	JS_CGETSET_DEF("playbackRate", media_get_playbackRate,
+		       media_set_playbackRate),
+	JS_CGETSET_DEF("defaultPlaybackRate", media_get_playbackRate,
+		       media_set_playbackRate),
 };
 
 /* ------------------------------------------------------------------ */

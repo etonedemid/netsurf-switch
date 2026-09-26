@@ -64,6 +64,7 @@
 #include "framebuffer/clipboard.h"
 #include "framebuffer/fetch.h"
 #include "framebuffer/bitmap.h"
+#include "framebuffer/fbmedia.h"
 #include "framebuffer/local_history.h"
 #include "framebuffer/corewindow.h"
 
@@ -966,6 +967,75 @@ static void fb_download_status(struct gui_download_window *dw)
 	fbtk_set_text(window_list->status, buf);
 }
 
+#ifdef FB_WITH_MEDIA
+/** a data: URL for a page that plays url in a media element */
+static char *fb_media_page_url(const char *url, bool audio)
+{
+	static const char hex[] = "0123456789ABCDEF";
+	const char *title = fb_media_basename(url);
+	size_t cap = strlen(url) * 6 + strlen(title) * 6 + 1024;
+	char *html = malloc(cap), *out, *o;
+	const char *p;
+	size_t n;
+
+	if (html == NULL)
+		return NULL;
+	n = snprintf(html, cap, "<!doctype html><html><head><meta charset=utf-8>"
+		"<title>%s</title></head><body style=\"margin:0;"
+		"background:#111;color:#eee;font-family:sans-serif;"
+		"text-align:center\">%s<%s src=\"",
+		title, audio ? "<p style=\"margin:2em\">" : "",
+		audio ? "audio" : "video");
+	for (p = url; *p != '\0' && n + 8 < cap; p++) {
+		if (*p == '"')
+			n += snprintf(html + n, cap - n, "&quot;");
+		else if (*p == '&')
+			n += snprintf(html + n, cap - n, "&amp;");
+		else
+			html[n++] = *p;
+	}
+	snprintf(html + n, cap - n, "\" controls autoplay style=\"%s\">"
+		"</%s></body></html>",
+		audio ? "width:80%" : "width:100%;max-height:100vh",
+		audio ? "audio" : "video");
+
+	out = malloc(strlen(html) * 3 + 32);
+	if (out == NULL) {
+		free(html);
+		return NULL;
+	}
+	o = out + sprintf(out, "data:text/html;charset=utf-8,");
+	for (p = html; *p != '\0'; p++) {
+		unsigned char c = *p;
+		if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		    (c >= '0' && c <= '9') || strchr("-_.~:/=;,!'()*", c)) {
+			*o++ = c;
+		} else {
+			*o++ = '%';
+			*o++ = hex[c >> 4];
+			*o++ = hex[c & 15];
+		}
+	}
+	*o = '\0';
+	free(html);
+	return out;
+}
+
+static void fb_media_page_cb(void *pw)
+{
+	char *page = pw;
+	nsurl *url;
+
+	if (page != NULL && window_list != NULL &&
+	    nsurl_create(page, &url) == NSERROR_OK) {
+		browser_window_navigate(window_list->bw, url, NULL,
+				BW_NAVIGATE_HISTORY, NULL, NULL, NULL);
+		nsurl_unref(url);
+	}
+	free(page);
+}
+#endif
+
 static struct gui_download_window *
 fb_download_create(download_context *ctx, struct gui_window *parent)
 {
@@ -985,6 +1055,13 @@ fb_download_create(download_context *ctx, struct gui_window *parent)
 	}
 
 	is_audio = fb_media_is_audio(mime, url_s);
+
+#ifdef FB_WITH_MEDIA
+	/* play in an inline player page (streams http and https) */
+	framebuffer_schedule(0, fb_media_page_cb,
+			fb_media_page_url(url_s, is_audio));
+	return NULL;
+#endif
 
 	if (strncmp(url_s, "https:", 6) != 0) {
 		/* ffmpeg can read http/file itself, so skip the spool */
@@ -2872,7 +2949,8 @@ gui_window_stop_throbber(struct gui_window *gw)
 
 	if (getenv("NS_CLICK") != NULL && !test_clicked) {
 		test_clicked = true;
-		framebuffer_schedule(500, fb_test_click_cb, NULL);
+		const char *cd = getenv("NS_CLICK_DELAY");
+		framebuffer_schedule(cd ? atoi(cd) : 500, fb_test_click_cb, NULL);
 	}
 	if (getenv("NS_SCREENSHOT") != NULL) {
 		const char *d = getenv("NS_SCREENSHOT_DELAY");
@@ -3025,6 +3103,9 @@ main(int argc, char** argv)
 		.utf8 = framebuffer_utf8_table,
 		.bitmap = framebuffer_bitmap_table,
 		.layout = framebuffer_layout_table,
+#ifdef FB_WITH_MEDIA
+		.media = framebuffer_media_table,
+#endif
 	};
 
 #ifdef __SWITCH__

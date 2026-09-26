@@ -37,6 +37,7 @@ struct content;
 struct box;
 struct browser_window;
 struct html_content;
+struct html_media;
 struct nsurl;
 struct dom_node;
 struct dom_string;
@@ -439,6 +440,11 @@ struct box {
 	 * Mask image object (mask-image), or NULL.
 	 */
 	struct hlcache_handle *mask;
+
+	/**
+	 * Media element state (<video>/<audio>), or NULL.
+	 */
+	struct html_media *media;
 
 
 	/**

@@ -143,6 +143,8 @@ fieldset { display: block; border: thin solid #888; margin: 1.12em 0; }
 
 noembed, script, style, title, template { display: none; }
 slot { display: contents; }
+audio:not([controls]) { display: none; }
+audio { display: inline-block; width: 300px; height: 36px; }
 dialog:not([open]) { display: none; }
 
 /* HTML5 elements */

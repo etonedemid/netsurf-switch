@@ -207,6 +207,21 @@ S_FRAMEBUFFER_FBTK := fbtk.c event.c fill.c bitmap.c user.c window.c 	\
 
 S_FRONTEND += font_$(NETSURF_FB_FONTLIB).c
 
+# inline <video>/<audio> playback (ffmpeg + SDL2 audio + libcurl)
+ifeq ($(HOST),aarch64-none-elf)
+  FB_MEDIA := YES
+else
+  FB_MEDIA := $(shell pkg-config --exists libavformat libavcodec libswscale libswresample libavutil sdl2 && echo YES)
+  ifeq ($(FB_MEDIA),YES)
+    CFLAGS += $(shell pkg-config --cflags libavformat libavcodec libswscale libswresample libavutil sdl2)
+    LDFLAGS += $(shell pkg-config --libs libavformat libavcodec libswscale libswresample libavutil sdl2) -lpthread
+  endif
+endif
+ifeq ($(FB_MEDIA),YES)
+  S_FRONTEND += fbmedia.c
+  CFLAGS += -DFB_WITH_MEDIA
+endif
+
 S_FRONTEND += $(addprefix fbtk/,$(S_FRAMEBUFFER_FBTK))
 
 # This is the final source build list
