@@ -2799,6 +2799,37 @@ throbber_advance(void *pw)
 	}
 }
 
+/* Headless test hook: NS_SCREENSHOT=file.ppm dumps the screen once the
+ * page has finished loading (plus NS_SCREENSHOT_DELAY ms) and exits. */
+static void fb_screenshot_cb(void *pw)
+{
+	const char *path = getenv("NS_SCREENSHOT");
+	uint8_t *ptr;
+	int stride, w, h, x, y;
+	FILE *f;
+
+	fbtk_redraw(fbtk);
+	fbtk_redraw(fbtk);
+	nsfb_t *nsfb = fbtk_get_nsfb(fbtk);
+	nsfb_get_geometry(nsfb, &w, &h, NULL);
+	nsfb_get_buffer(nsfb, &ptr, &stride);
+	f = fopen(path, "wb");
+	if (f != NULL) {
+		fprintf(f, "P6\n%d %d\n255\n", w, h);
+		for (y = 0; y < h; y++) {
+			uint32_t *row = (uint32_t *)(ptr + y * stride);
+			for (x = 0; x < w; x++) {
+				uint32_t p = row[x];
+				fputc((p >> 16) & 0xff, f);
+				fputc((p >> 8) & 0xff, f);
+				fputc(p & 0xff, f);
+			}
+		}
+		fclose(f);
+	}
+	fb_complete = true;
+}
+
 static void
 gui_window_start_throbber(struct gui_window *g)
 {
@@ -2811,6 +2842,11 @@ gui_window_stop_throbber(struct gui_window *gw)
 {
 	gw->throbber_index = -1;
 	fbtk_set_bitmap(gw->throbber, &throbber0);
+
+	if (getenv("NS_SCREENSHOT") != NULL) {
+		const char *d = getenv("NS_SCREENSHOT_DELAY");
+		framebuffer_schedule(d ? atoi(d) : 1000, fb_screenshot_cb, NULL);
+	}
 
 	fb_update_back_forward(gw);
 
