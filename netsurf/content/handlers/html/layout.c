@@ -1001,6 +1001,9 @@ static void layout_minmax_block(
 			}
 
 			if (lh__box_is_flex_container(block) &&
+			    layout_grid_is_grid(block)) {
+				/* computed from all items below */
+			} else if (lh__box_is_flex_container(block) &&
 			    lh__flex_main_is_horizontal(block)) {
 				if (block->style != NULL &&
 				    css_computed_flex_wrap(block->style) ==
@@ -1022,6 +1025,11 @@ static void layout_minmax_block(
 			if (child_has_height)
 				block->flags |= HAS_HEIGHT;
 		}
+	}
+
+	if (lh__box_is_flex_container(block) && layout_grid_is_grid(block) &&
+			block->object == NULL) {
+		layout_grid_minmax(block, content, &min, &max);
 	}
 
 	if (max < min) {
@@ -1174,6 +1182,7 @@ layout_next_margin_block(const css_unit_ctx *unit_len_ctx,
 			/* Check whether box is the box current margin collapses
 			 * to */
 			if (box->flags & MAKE_HEIGHT ||
+					box->type == BOX_FLEX ||
 					box->border[TOP].width ||
 					box->padding[TOP] ||
 					(box->style &&

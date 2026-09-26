@@ -44,8 +44,12 @@ static bool set_clip(nsfb_t *nsfb, nsfb_bbox_t *clip)
 	if (clip == NULL) {
 		nsfb->clip = fbarea;
 	} else {
-		if (!nsfb_plot_clip(&fbarea, clip))
-			return false;
+		if (!nsfb_plot_clip(&fbarea, clip)) {
+			/* entirely off-surface: nothing may be plotted */
+			nsfb->clip.x0 = nsfb->clip.x1 = 0;
+			nsfb->clip.y0 = nsfb->clip.y1 = 0;
+			return true;
+		}
 
 		nsfb->clip = *clip;
 	}

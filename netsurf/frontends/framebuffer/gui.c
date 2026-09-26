@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <nsutils/time.h>
 #include <libcss/libcss.h>
+#include "netsurf/content_type.h"
 
 #ifdef __SWITCH__
 #include <sys/stat.h>
@@ -2811,6 +2812,14 @@ static void fb_screenshot_cb(void *pw)
 
 	fbtk_redraw(fbtk);
 	fbtk_redraw(fbtk);
+	if (getenv("NS_DUMPBOX") != NULL && window_list != NULL) {
+		FILE *df = fopen(getenv("NS_DUMPBOX"), "w");
+		if (df != NULL) {
+			browser_window_debug_dump(window_list->bw, df,
+					CONTENT_DEBUG_RENDER);
+			fclose(df);
+		}
+	}
 	nsfb_t *nsfb = fbtk_get_nsfb(fbtk);
 	nsfb_get_geometry(nsfb, &w, &h, NULL);
 	nsfb_get_buffer(nsfb, &ptr, &stride);

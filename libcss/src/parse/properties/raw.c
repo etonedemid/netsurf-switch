@@ -482,6 +482,8 @@ static css_error parse_grid_placement(css_language *c,
 			/* Omitted value: copy a custom ident from the
 			 * matching earlier value, else auto */
 			int from = (nprops == 4) ? (i >= 2 ? i - 2 : 0) : 0;
+			if (from >= n)
+				from = 0;
 			if (from < n && bound[from + 1] - bound[from] == 1 &&
 					raw_comp_is_ident(vector, rv,
 						bound[from])) {
