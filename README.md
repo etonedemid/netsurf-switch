@@ -19,6 +19,9 @@ real sites over HTTPS on hardware.
 - **Declarative shadow DOM** (`<template shadowrootmode>`, slots, scoped
   styles) for web-component sites
 - **Inline SVG** and SVG images, drawn by an anti-aliased path rasteriser
+- **`<canvas>` 2D**: paths, arcs and curves, fills and strokes,
+  transforms, linear/radial gradients, compositing, text, `drawImage`,
+  `getImageData`/`putImageData`, `Path2D`, animation
 - **JavaScript via QuickJS, on by default**: a large web platform layer
   (DOM, events, `fetch`/XHR, storage, `MutationObserver`,
   `IntersectionObserver`, `matchMedia`, timers, `history`), **ES modules**
@@ -57,7 +60,7 @@ JavaScript can be turned off with `enable_javascript:0` in
 - Media Source Extensions / HLS / DASH (YouTube-style adaptive streaming)
 - CSS counters, `position: sticky`, 3D/rotating transforms, animated
   transitions (final states only)
-- `<canvas>` 2D drawing, WebGL
+- WebGL; canvas shadows, dashes and patterns
 
 ## Development
 

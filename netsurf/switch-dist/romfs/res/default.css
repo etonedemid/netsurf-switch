@@ -146,6 +146,19 @@ slot { display: contents; }
 audio:not([controls]) { display: none; }
 audio { display: inline-block; width: 300px; height: 36px; }
 dialog:not([open]) { display: none; }
+[hidden] { display: none; }
+details { display: block; }
+details > summary:first-of-type { display: block; cursor: pointer; }
+details > summary:first-of-type::before { content: "\25B8  "; }
+details[open] > summary:first-of-type::before { content: "\25BE  "; }
+details:not([open]) > :not(summary) { display: none; }
+dialog[open] { display: block; position: absolute; left: 0; right: 0;
+	margin: auto; width: fit-content; max-width: 80%; top: 15%;
+	border: 2px solid #444; padding: 1em; background: #fff; color: #000;
+	z-index: 1000; }
+progress, meter { display: inline-block; width: 10em; height: 1em;
+	background: #ddd; border-radius: 3px; vertical-align: -0.2em; }
+picture { display: inline; }
 
 /* HTML5 elements */
 article, aside, figcaption, figure, footer, header, main, nav, section {

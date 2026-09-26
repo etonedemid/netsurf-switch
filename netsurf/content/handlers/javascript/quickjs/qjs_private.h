@@ -107,6 +107,12 @@ void qjs_dom_teardown(struct jsthread *thread);
 void qjs_dom_closethread(struct jsthread *thread);
 
 JSValue qjs_dom_wrap_node(struct jsthread *thread, struct dom_node *node);
+
+/** the DOM node wrapped by a JS value, or NULL */
+struct dom_node *qjs_dom_node_of(JSContext *ctx, JSValueConst v);
+
+/* <canvas> 2D context (qjs_canvas.c) */
+void qjs_canvas_install(struct jsthread *thread, JSValue ns);
 JSValue qjs_dom_wrap_event(struct jsthread *thread, struct dom_event *evt);
 
 bool qjs_dom_fire_event(struct jsthread *thread, const char *type,

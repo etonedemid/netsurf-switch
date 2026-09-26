@@ -131,6 +131,12 @@ static dom_node *qjs_this_node(JSContext *ctx, JSValueConst this_val)
 	return JS_GetOpaque(this_val, t->heap->node_class);
 }
 
+/* exported interface documented in qjs_private.h */
+struct dom_node *qjs_dom_node_of(JSContext *ctx, JSValueConst v)
+{
+	return qjs_this_node(ctx, v);
+}
+
 static dom_event *qjs_this_event(JSContext *ctx, JSValueConst this_val)
 {
 	struct jsthread *t = qjs_thread(ctx);

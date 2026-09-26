@@ -60,6 +60,7 @@
 #include "html/html.h"
 #include "html/private.h"
 #include "html/media.h"
+#include "html/canvas.h"
 #include "html/rebuild.h"
 #include "html/dom_event.h"
 #include "html/css.h"
@@ -1257,6 +1258,7 @@ static void html_destroy(struct content *c)
 	selection_destroy(html->sel);
 
 	html_media_destroy_all(html);
+	html_canvas_destroy_all(html);
 
 	/* Destroy forms */
 	for (f = html->forms; f != NULL; f = g) {

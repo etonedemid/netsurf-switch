@@ -156,7 +156,7 @@ static inline bool lh__box_is_inline_content(const struct box *b)
 /** Layout helper: Check whether box is an object. */
 static inline bool lh__box_is_object(const struct box *b)
 {
-	return b->object || b->media ||
+	return b->object || box_has_intrinsic(b) ||
 	       (b->flags & (IFRAME | REPLACE_DIM));
 }
 

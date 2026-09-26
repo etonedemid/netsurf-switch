@@ -38,6 +38,10 @@ struct box;
 struct browser_window;
 struct html_content;
 struct html_media;
+struct html_canvas;
+
+/** replaced box sized by a media or canvas element */
+#define box_has_intrinsic(b) ((b)->media != NULL || (b)->canvas != NULL)
 struct nsurl;
 struct dom_node;
 struct dom_string;
@@ -445,6 +449,11 @@ struct box {
 	 * Media element state (<video>/<audio>), or NULL.
 	 */
 	struct html_media *media;
+
+	/**
+	 * Canvas element state (<canvas>), or NULL.
+	 */
+	struct html_canvas *canvas;
 
 
 	/**

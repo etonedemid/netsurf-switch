@@ -84,6 +84,10 @@ static void fb_dock_poll(void *pw);
 #include "framebuffer/fetch.h"
 #include "framebuffer/bitmap.h"
 #include "framebuffer/fbmedia.h"
+
+#ifdef FB_USE_FREETYPE
+extern struct gui_canvas_table *framebuffer_canvas_table;
+#endif
 #include "framebuffer/local_history.h"
 #include "framebuffer/corewindow.h"
 
@@ -3135,6 +3139,9 @@ main(int argc, char** argv)
 		.layout = framebuffer_layout_table,
 #ifdef FB_WITH_MEDIA
 		.media = framebuffer_media_table,
+#endif
+#ifdef FB_USE_FREETYPE
+		.canvas = framebuffer_canvas_table,
 #endif
 	};
 

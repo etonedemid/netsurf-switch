@@ -228,6 +228,9 @@ typedef struct html_content {
 	/** media elements (<video>/<audio>) */
 	struct html_media *media_elements;
 
+	/** canvas elements */
+	struct html_canvas *canvases;
+
 	/** hashes of scoped shadow stylesheets already added */
 	uint32_t *shadow_css_hashes;
 	unsigned int shadow_css_count;

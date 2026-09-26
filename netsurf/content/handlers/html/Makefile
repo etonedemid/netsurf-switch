@@ -6,6 +6,7 @@ S_HTML := box_construct.c	\
 	box_normalise.c		\
 	box_special.c		\
 	box_textarea.c		\
+	canvas.c		\
 	css.c			\
 	css_fetcher.c		\
 	dom_event.c		\

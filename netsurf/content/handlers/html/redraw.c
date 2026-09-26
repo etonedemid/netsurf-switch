@@ -52,6 +52,7 @@
 #include "css/utils.h"
 #include "css/css_fx.h"
 #include "html/media.h"
+#include "html/canvas.h"
 #include "desktop/selection.h"
 #include "desktop/print.h"
 #include "desktop/scrollbar.h"
@@ -2121,7 +2122,11 @@ static bool html_redraw_box_contents(const html_content *html,
 		tag_type = DOM_HTML_ELEMENT_TYPE__UNKNOWN;
 	}
 
-	if (box->media != NULL && width != 0 && height != 0) {
+	if (box->canvas != NULL && width != 0 && height != 0) {
+		if (!html_canvas_redraw(box, x + padding_left, y + padding_top,
+				width, height, &r, ctx))
+			return false;
+	} else if (box->media != NULL && width != 0 && height != 0) {
 		if (!html_media_redraw(box, x + padding_left, y + padding_top,
 				width, height, &r, scale, ctx))
 			return false;

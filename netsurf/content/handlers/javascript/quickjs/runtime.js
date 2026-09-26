@@ -1266,31 +1266,115 @@ accessor(ElementP, 'naturalHeight', function () { var r = docRect(this); return 
 accessor(ElementP, 'currentSrc', function () { return this.src; });
 method(ElementP, 'decode', function () { return Promise.resolve(); });
 
-/* <canvas>: a 2D context whose drawing is discarded */
-method(ElementP, 'getContext', function (kind) {
-	if (this.tagName !== 'CANVAS' || kind !== '2d') return null;
-	var canvas = this;
-	var noop = function () {};
-	var ctx = {
-		canvas: canvas, fillStyle: '#000', strokeStyle: '#000', lineWidth: 1,
-		font: '10px sans-serif', textAlign: 'start', textBaseline: 'alphabetic',
-		globalAlpha: 1, globalCompositeOperation: 'source-over',
-		measureText: function (t) { return { width: toStr(t).length * 6, actualBoundingBoxAscent: 8, actualBoundingBoxDescent: 2 }; },
-		getImageData: function (x, y, w, h) { return { width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }; },
-		createImageData: function (w, h) { return { width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }; },
-		createLinearGradient: function () { return { addColorStop: noop }; },
-		createRadialGradient: function () { return { addColorStop: noop }; },
-		createPattern: function () { return {}; },
-		getTransform: function () { return { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }; },
-		isPointInPath: function () { return false; }
-	};
-	['fillRect', 'strokeRect', 'clearRect', 'fillText', 'strokeText', 'beginPath', 'closePath',
-	 'moveTo', 'lineTo', 'arc', 'arcTo', 'rect', 'ellipse', 'quadraticCurveTo', 'bezierCurveTo',
-	 'fill', 'stroke', 'clip', 'save', 'restore', 'translate', 'rotate', 'scale', 'transform',
-	 'setTransform', 'resetTransform', 'drawImage', 'putImageData', 'setLineDash', 'roundRect']
-		.forEach(function (n) { ctx[n] = noop; });
-	return ctx;
+/* <canvas>: CanvasRenderingContext2D is native (qjs_canvas.c) */
+function CanvasGradient(type, a) { this._t = type; this._a = a; this._s = []; }
+CanvasGradient.prototype.addColorStop = function (o, c) {
+	o = +o;
+	if (!(o >= 0 && o <= 1)) throw new DOMException('offset out of range', 'IndexSizeError');
+	this._s.push([o, String(c)]);
+	this._s.sort(function (x, y) { return x[0] - y[0]; });
+};
+global.CanvasGradient = CanvasGradient;
+function CanvasPattern(c) { this._t = 'pattern'; this._c = c || 'rgba(0,0,0,0)'; }
+CanvasPattern.prototype.setTransform = function () {};
+global.CanvasPattern = CanvasPattern;
+function ImageData(a, b, c) {
+	if (typeof a === 'number') {
+		this.width = a >>> 0; this.height = b >>> 0;
+		this.data = new Uint8ClampedArray(this.width * this.height * 4);
+	} else {
+		this.data = a; this.width = b >>> 0;
+		this.height = c !== undefined ? c >>> 0 : (a.length / 4 / this.width) >>> 0;
+	}
+	this.colorSpace = 'srgb';
+}
+global.ImageData = ImageData;
+function Path2D(p) { this._ops = p && p._ops ? p._ops.slice() : []; }
+['moveTo', 'lineTo', 'bezierCurveTo', 'quadraticCurveTo', 'arc', 'arcTo', 'ellipse',
+ 'rect', 'roundRect', 'closePath'].forEach(function (n) {
+	Path2D.prototype[n] = function () { this._ops.push([n, Array.prototype.slice.call(arguments)]); };
 });
+Path2D.prototype.addPath = function (p) { if (p && p._ops) this._ops = this._ops.concat(p._ops); };
+global.Path2D = Path2D;
+var Ctx2DP = global.CanvasRenderingContext2D && global.CanvasRenderingContext2D.prototype;
+if (Ctx2DP) {
+	var nativeFill = Ctx2DP.fill, nativeStroke = Ctx2DP.stroke, nativeClip = Ctx2DP.clip,
+		nativeInPath = Ctx2DP.isPointInPath;
+	var replay = function (ctx, p) {
+		ctx.beginPath();
+		p._ops.forEach(function (op) { ctx[op[0]].apply(ctx, op[1]); });
+	};
+	Ctx2DP.fill = function (a, b) {
+		if (a instanceof Path2D) { replay(this, a); return nativeFill.call(this, b); }
+		return nativeFill.call(this, a);
+	};
+	Ctx2DP.stroke = function (a) {
+		if (a instanceof Path2D) replay(this, a);
+		return nativeStroke.call(this);
+	};
+	Ctx2DP.clip = function (a, b) {
+		if (a instanceof Path2D) replay(this, a);
+		return nativeClip.call(this);
+	};
+	Ctx2DP.isPointInPath = function (a, x, y) {
+		if (a instanceof Path2D) { replay(this, a); return nativeInPath.call(this, x, y); }
+		return nativeInPath.call(this, a, x);
+	};
+	Ctx2DP.createLinearGradient = function (x0, y0, x1, y1) {
+		return new CanvasGradient('linear', [+x0, +y0, +x1, +y1, 0, 0]);
+	};
+	Ctx2DP.createRadialGradient = function (x0, y0, r0, x1, y1, r1) {
+		return new CanvasGradient('radial', [+x0, +y0, +r0, +x1, +y1, +r1]);
+	};
+	Ctx2DP.createConicGradient = function (a, x, y) {
+		return new CanvasGradient('radial', [+x, +y, 0, +x, +y, 100]);
+	};
+	Ctx2DP.createPattern = function () { return new CanvasPattern('rgba(128,128,128,0.5)'); };
+	Ctx2DP.createImageData = function (w, h) {
+		if (w && typeof w === 'object') return new ImageData(w.width, w.height);
+		return new ImageData(Math.abs(w), Math.abs(h));
+	};
+	Ctx2DP.getImageData = function (x, y, w, h) {
+		var buf = this.__getImageData(x, y, w, h);
+		return new ImageData(new Uint8ClampedArray(buf), w, h);
+	};
+	Ctx2DP.putImageData = function (d, dx, dy, sx, sy, sw, sh) {
+		if (sx === undefined) { sx = 0; sy = 0; sw = d.width; sh = d.height; }
+		this.__putImageData(d.data, d.width, d.height, dx | 0, dy | 0, sx | 0, sy | 0, sw | 0, sh | 0);
+	};
+	Ctx2DP.getLineDash = function () { return []; };
+	Ctx2DP.getContextAttributes = function () { return { alpha: true, desynchronized: false }; };
+	['shadowBlur', 'shadowOffsetX', 'shadowOffsetY', 'miterLimit', 'lineDashOffset'].forEach(function (k) {
+		def(Ctx2DP, k, { get: function () { return this['__' + k] || (k === 'miterLimit' ? 10 : 0); },
+			set: function (v) { this['__' + k] = +v; } });
+	});
+	['shadowColor', 'filter', 'direction', 'fontKerning', 'letterSpacing', 'imageSmoothingQuality'].forEach(function (k) {
+		def(Ctx2DP, k, { get: function () { return this['__' + k] || ''; },
+			set: function (v) { this['__' + k] = String(v); } });
+	});
+}
+method(ElementP, 'getContext', function (kind) {
+	if (this.tagName !== 'CANVAS') return null;
+	if (kind !== '2d') return null;
+	if (!this.__ns_ctx2d) this.__ns_ctx2d = ns.canvasContext(this);
+	return this.__ns_ctx2d;
+});
+(function () {
+	var w = Object.getOwnPropertyDescriptor(ElementP, 'width');
+	var h = Object.getOwnPropertyDescriptor(ElementP, 'height');
+	def(ElementP, 'width', {
+		get: function () { return this.tagName === 'CANVAS' ? ns.canvasSize(this)[0] : w.get.call(this); },
+		set: function (v) {
+			w.set.call(this, v);
+			if (this.tagName === 'CANVAS') ns.canvasResize(this, v >>> 0, ns.canvasSize(this)[1]);
+		}, enumerable: true });
+	def(ElementP, 'height', {
+		get: function () { return this.tagName === 'CANVAS' ? ns.canvasSize(this)[1] : h.get.call(this); },
+		set: function (v) {
+			h.set.call(this, v);
+			if (this.tagName === 'CANVAS') ns.canvasResize(this, ns.canvasSize(this)[0], v >>> 0);
+		}, enumerable: true });
+})();
 method(ElementP, 'toDataURL', function () {
 	return 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
 });
