@@ -438,6 +438,13 @@ struct plotter_table {
 	nserror (*layer_end)(const struct redraw_context *ctx,
 			const struct plot_layer *layer);
 
+	/**
+	 * Tint mode: while enabled, paths and bitmaps are drawn in the
+	 * given colour using only their coverage/alpha (for mask-image).
+	 */
+	nserror (*tint)(const struct redraw_context *ctx, bool enable,
+			colour c);
+
 	/* flags */
 	/**
 	 * flag to enable knockout rendering.

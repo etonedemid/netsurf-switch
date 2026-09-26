@@ -106,6 +106,11 @@ struct css_computed_style_i {
  * margin_left                      2 + 5           4
  * margin_right                     2 + 5           4
  * margin_top                       2 + 5           4
+ * mask                             1             sizeof(ptr)
+ * mask_image                       1             sizeof(ptr)
+ * mask_position                    1             sizeof(ptr)
+ * mask_repeat                      1             sizeof(ptr)
+ * mask_size                        1             sizeof(ptr)
  * max_height                       2 + 5           4
  * max_width                        2 + 5           4
  * min_height                       2 + 5           4
@@ -183,9 +188,9 @@ struct css_computed_style_i {
  * quotes                           1             sizeof(ptr)
  * 
  * ---                            ---             ---
- *                                495 bits        236 + 39sizeof(ptr) bytes
+ *                                500 bits        236 + 44sizeof(ptr) bytes
  *                                ===================
- *                                298 + 39sizeof(ptr) bytes
+ *                                299 + 44sizeof(ptr) bytes
  * 
  * Bit allocations:
  * 
@@ -240,19 +245,19 @@ struct css_computed_style_i {
  * overflow_y; overflow_x; justify_content; font_family; flex_direction; clear;
  * widows
  * 
- * 14 bbaatrexsoqpvhdcjfliuygmGwnRIDAU
+ * 14 bbaatrexsoqpvhdcjfmkigMlnuywGRID
  * background_color; background_attachment; transform_origin; transform;
  * text_shadow; text_overflow; stroke_opacity; row_gap; quotes; pointer_events;
  * overflow_wrap; orphans; order; opacity; object_position; object_fit;
- * list_style_image; line_clamp; justify_self; justify_items;
- * grid_template_rows; grid_template_columns; grid_template_areas;
- * grid_row_start; grid_row_end; grid_column_start; grid_column_end;
- * grid_auto_rows; grid_auto_flow; grid_auto_columns
+ * mask_size; mask_repeat; mask_position; mask_image; mask; list_style_image;
+ * line_clamp; justify_self; justify_items; grid_template_rows;
+ * grid_template_columns; grid_template_areas; grid_row_start; grid_row_end
  * 
- * 15 fliocurbdetmaks.................
- * flex_shrink; flex_grow; filter; fill_opacity; counter_reset;
- * counter_increment; color; box_shadow; border_top_right_radius;
- * border_top_left_radius; border_bottom_right_radius;
+ * 15 gridafltocuCbepmsknA............
+ * grid_column_start; grid_column_end; grid_auto_rows; grid_auto_flow;
+ * grid_auto_columns; flex_shrink; flex_grow; filter; fill_opacity;
+ * counter_reset; counter_increment; color; box_shadow;
+ * border_top_right_radius; border_top_left_radius; border_bottom_right_radius;
  * border_bottom_left_radius; background_size; background_image; aspect_ratio
  */
 	uint32_t bits[16];
@@ -317,6 +322,11 @@ struct css_computed_style_i {
 	css_fixed margin_left;
 	css_fixed margin_right;
 	css_fixed margin_top;
+	lwc_string *mask;
+	lwc_string *mask_image;
+	lwc_string *mask_position;
+	lwc_string *mask_repeat;
+	lwc_string *mask_size;
 	css_fixed max_height;
 	css_fixed max_width;
 	css_fixed min_height;

@@ -646,5 +646,25 @@ struct prop_table prop_dispatch[CSS_N_PROPERTIES] = {
 	{
 		PROPERTY_FUNCS(line_clamp),
 		0,
+	},
+	{
+		PROPERTY_FUNCS(mask_image),
+		0,
+	},
+	{
+		PROPERTY_FUNCS(mask_size),
+		0,
+	},
+	{
+		PROPERTY_FUNCS(mask_position),
+		0,
+	},
+	{
+		PROPERTY_FUNCS(mask_repeat),
+		0,
+	},
+	{
+		PROPERTY_FUNCS(mask),
+		0,
 	}
 };

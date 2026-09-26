@@ -321,6 +321,9 @@ framebuffer_plot_bitmap(const struct redraw_context *ctx,
 	unsigned char *bmptr;
 	nsfb_t *bm = (nsfb_t *)bitmap;
 
+	if (fbfx_tint_bitmap(bm, x, y, width, height))
+		return NSERROR_OK;
+
 	/* x and y define coordinate of top left of of the initial explicitly
 	 * placed tile. The width and height are the image scaling and the
 	 * bounding box defines the extent of the repeat (which may go in all
@@ -530,7 +533,7 @@ const struct plotter_table fb_plotters = {
 	.line = framebuffer_plot_line,
 	.rectangle = framebuffer_plot_rectangle,
 	.polygon = framebuffer_plot_polygon,
-	.path = framebuffer_plot_path,
+	.path = fbfx_path,
 	.bitmap = framebuffer_plot_bitmap,
 	.text = framebuffer_plot_text,
 	.rounded_fill = fbfx_rounded_fill,
@@ -538,6 +541,7 @@ const struct plotter_table fb_plotters = {
 	.shadow = fbfx_shadow,
 	.layer_begin = fbfx_layer_begin,
 	.layer_end = fbfx_layer_end,
+	.tint = fbfx_tint,
 	/* knockout would reorder plots across compositing layers */
 	.option_knockout = false,
 };

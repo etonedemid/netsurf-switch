@@ -45,6 +45,8 @@
 #include "html/box.h"
 #include "html/box_manipulate.h"
 #include "html/box_construct.h"
+#include "html/shadow.h"
+#include "css/css_fx.h"
 #include "html/box_special.h"
 #include "html/box_normalise.h"
 #include "html/form_internal.h"
@@ -113,6 +115,7 @@ static const box_type box_map[] = {
 	BOX_INLINE_FLEX,     /* CSS_DISPLAY_INLINE_FLEX */
 	BOX_FLEX,            /* CSS_DISPLAY_GRID */
 	BOX_INLINE_FLEX,     /* CSS_DISPLAY_INLINE_GRID */
+	BOX_INLINE,          /* CSS_DISPLAY_CONTENTS (handled specially) */
 };
 
 
@@ -169,9 +172,9 @@ box_extract_properties(dom_node *n, struct box_construct_props *props)
 
 		/* Find ancestor node containing parent box */
 		while (true) {
-			err = dom_node_get_parent_node(current_node,
-					&parent_node);
-			if (err != DOM_NO_ERR || parent_node == NULL)
+			parent_node = html_flat_parent(current_node);
+			err = DOM_NO_ERR;
+			if (parent_node == NULL)
 				break;
 
 			parent_box = box_for_node(parent_node);
@@ -196,9 +199,9 @@ box_extract_properties(dom_node *n, struct box_construct_props *props)
 		while (true) {
 			struct box *b;
 
-			err = dom_node_get_parent_node(current_node,
-					&parent_node);
-			if (err != DOM_NO_ERR || parent_node == NULL) {
+			parent_node = html_flat_parent(current_node);
+			err = DOM_NO_ERR;
+			if (parent_node == NULL) {
 				if (current_node != n)
 					dom_node_unref(current_node);
 				break;
@@ -216,7 +219,8 @@ box_extract_properties(dom_node *n, struct box_construct_props *props)
 			 * use the parent node's styling as the parent
 			 * style, above. */
 			if (b != NULL && b->type != BOX_INLINE &&
-					b->type != BOX_BR) {
+					b->type != BOX_BR &&
+					!(b->flags & CONTENTS_BOX)) {
 				props->containing_block = b;
 
 				dom_node_unref(parent_node);
@@ -301,6 +305,51 @@ box_get_style(html_content *c,
 
 
 /**
+ * Start fetches for the images a box's style refers to (background and
+ * mask images).
+ *
+ * \return false on memory exhaustion
+ */
+static bool box_fetch_style_images(html_content *content, struct box *box)
+{
+	lwc_string *bgimage_uri;
+	char *mask;
+	nsurl *url;
+
+	if (box->style == NULL)
+		return true;
+
+	if (css_computed_background_image(box->style, &bgimage_uri) ==
+			CSS_BACKGROUND_IMAGE_IMAGE && bgimage_uri != NULL &&
+			strncmp(lwc_string_data(bgimage_uri), "gradient:", 9) != 0 &&
+			nsoption_bool(background_images) == true) {
+		if (nsurl_create(lwc_string_data(bgimage_uri), &url) ==
+				NSERROR_OK) {
+			bool ok = html_fetch_object(content, url, box,
+					image_types, true);
+			nsurl_unref(url);
+			if (!ok)
+				return false;
+		}
+	}
+
+	mask = cssfx_mask_url(box->style);
+	if (mask != NULL) {
+		if (nsurl_create(mask, &url) == NSERROR_OK) {
+			bool ok = html_fetch_mask_object(content, url, box);
+			nsurl_unref(url);
+			if (!ok) {
+				free(mask);
+				return false;
+			}
+		}
+		free(mask);
+	}
+	return true;
+}
+
+
+/**
  * Construct the box required for a generated element.
  *
  * \param n        XML node of type XML_ELEMENT_NODE
@@ -353,6 +402,7 @@ box_construct_generate(dom_node *n,
 				style, box_is_root(n))];
 
 		box_add_child(box, gen);
+		box_fetch_style_images(content, gen);
 	}
 }
 
@@ -478,7 +528,6 @@ box_construct_element(struct box_construct_ctx *ctx, bool *convert_children)
 	enum css_display_e css_display;
 	struct box *box = NULL, *old_box;
 	css_select_results *styles = NULL;
-	lwc_string *bgimage_uri;
 	dom_exception err;
 	struct box_construct_props props;
 	const css_computed_style *root_style = NULL;
@@ -574,6 +623,33 @@ box_construct_element(struct box_construct_ctx *ctx, bool *convert_children)
 			box->rows = clamp(strtol(val, NULL, 10), 0, 65534);
 
 		dom_string_unref(s);
+	}
+
+	if (!props.node_is_root && css_computed_display_static(box->style) ==
+			CSS_DISPLAY_CONTENTS) {
+		/* display: contents generates no box of its own; its
+		 * children are placed as if they were children of the
+		 * parent. A detached box records the style (for
+		 * inheritance) and link for the children. */
+		dom_html_element_type tag;
+		if (dom_html_element_get_tag_type(ctx->n, &tag) == DOM_NO_ERR &&
+				tag == DOM_HTML_ELEMENT_TYPE_A) {
+			box->type = BOX_INLINE;
+			convert_special_elements(ctx->n, ctx->content, box,
+					convert_children);
+		}
+		box->type = BOX_INLINE;
+		box->flags |= CONTENTS_BOX | CONVERT_CHILDREN;
+		err = dom_node_set_user_data(ctx->n,
+				corestring_dom___ns_key_box_node_data, box,
+				NULL, (void *) &old_box);
+		if (err != DOM_NO_ERR)
+			return false;
+		box->node = dom_node_ref(ctx->n);
+		box->next = ctx->content->contents_boxes;
+		ctx->content->contents_boxes = box;
+		*convert_children = true;
+		return true;
 	}
 
 	css_display = ns_computed_display_static(box->style);
@@ -685,32 +761,9 @@ box_construct_element(struct box_construct_ctx *ctx, bool *convert_children)
 		box_add_child(props.containing_block, props.inline_container);
 	}
 
-	/* Kick off fetch for any background image */
-	if (css_computed_background_image(box->style, &bgimage_uri) ==
-			CSS_BACKGROUND_IMAGE_IMAGE && bgimage_uri != NULL &&
-			strncmp(lwc_string_data(bgimage_uri), "gradient:", 9) != 0 &&
-			nsoption_bool(background_images) == true) {
-		nsurl *url;
-		nserror error;
-
-		/* TODO: we get a url out of libcss as a lwc string, but
-		 *       earlier we already had it as a nsurl after we
-		 *       nsurl_joined it.  Can this be improved?
-		 *       For now, just making another nsurl. */
-		error = nsurl_create(lwc_string_data(bgimage_uri), &url);
-		if (error == NSERROR_OK) {
-			/* Fetch image if we got a valid URL */
-			if (html_fetch_object(ctx->content,
-					      url,
-					      box,
-					      image_types,
-					      true) == false) {
-				nsurl_unref(url);
-				return false;
-			}
-			nsurl_unref(url);
-		}
-	}
+	/* Kick off fetches for background and mask images */
+	if (box_fetch_style_images(ctx->content, box) == false)
+		return false;
 
 	if (*convert_children)
 		box->flags |= CONVERT_CHILDREN;
@@ -780,17 +833,17 @@ static void box_construct_element_after(dom_node *n, html_content *content)
 
 	assert(box != NULL);
 
+	if (box->flags & CONTENTS_BOX)
+		return;
+
 	box_extract_properties(n, &props);
 
 	if (box->type == BOX_INLINE || box->type == BOX_BR) {
 		/* Insert INLINE_END into containing block */
 		struct box *inline_end;
 		bool has_children;
-		dom_exception err;
 
-		err = dom_node_has_child_nodes(n, &has_children);
-		if (err != DOM_NO_ERR)
-			return;
+		has_children = html_flat_has_children(n);
 
 		if (has_children == false ||
 				(box->flags & CONVERT_CHILDREN) == 0) {
@@ -848,104 +901,44 @@ static dom_node *
 next_node(dom_node *n, html_content *content, bool convert_children)
 {
 	dom_node *next = NULL;
-	bool has_children;
-	dom_exception err;
 
-	err = dom_node_has_child_nodes(n, &has_children);
-	if (err != DOM_NO_ERR) {
-		dom_node_unref(n);
-		return NULL;
-	}
-
-	if (convert_children && has_children) {
-		err = dom_node_get_first_child(n, &next);
-		if (err != DOM_NO_ERR) {
-			dom_node_unref(n);
-			return NULL;
-		}
-		dom_node_unref(n);
-	} else {
-		err = dom_node_get_next_sibling(n, &next);
-		if (err != DOM_NO_ERR) {
-			dom_node_unref(n);
-			return NULL;
-		}
-
+	/* traversal follows the flat tree (shadow roots and slots) */
+	if (convert_children) {
+		next = html_flat_first_child(n);
 		if (next != NULL) {
-			if (box_for_node(n) != NULL)
-				box_construct_element_after(n, content);
 			dom_node_unref(n);
-		} else {
-			if (box_for_node(n) != NULL)
-				box_construct_element_after(n, content);
-
-			while (box_is_root(n) == false) {
-				dom_node *parent = NULL;
-				dom_node *parent_next = NULL;
-
-				err = dom_node_get_parent_node(n, &parent);
-				if (err != DOM_NO_ERR) {
-					dom_node_unref(n);
-					return NULL;
-				}
-
-				assert(parent != NULL);
-
-				err = dom_node_get_next_sibling(parent,
-						&parent_next);
-				if (err != DOM_NO_ERR) {
-					dom_node_unref(parent);
-					dom_node_unref(n);
-					return NULL;
-				}
-
-				if (parent_next != NULL) {
-					dom_node_unref(parent_next);
-					dom_node_unref(parent);
-					break;
-				}
-
-				dom_node_unref(n);
-				n = parent;
-				parent = NULL;
-
-				if (box_for_node(n) != NULL) {
-					box_construct_element_after(
-							n, content);
-				}
-			}
-
-			if (box_is_root(n) == false) {
-				dom_node *parent = NULL;
-
-				err = dom_node_get_parent_node(n, &parent);
-				if (err != DOM_NO_ERR) {
-					dom_node_unref(n);
-					return NULL;
-				}
-
-				assert(parent != NULL);
-
-				err = dom_node_get_next_sibling(parent, &next);
-				if (err != DOM_NO_ERR) {
-					dom_node_unref(parent);
-					dom_node_unref(n);
-					return NULL;
-				}
-
-				if (box_for_node(parent) != NULL) {
-					box_construct_element_after(parent,
-							content);
-				}
-
-				dom_node_unref(parent);
-			}
-
-			dom_node_unref(n);
+			return next;
 		}
 	}
 
-	return next;
+	next = html_flat_next_sibling(n);
+	if (box_for_node(n) != NULL)
+		box_construct_element_after(n, content);
+	if (next != NULL) {
+		dom_node_unref(n);
+		return next;
+	}
+
+	/* climb until an ancestor has a following sibling */
+	while (box_is_root(n) == false) {
+		dom_node *parent = html_flat_parent(n);
+
+		dom_node_unref(n);
+		if (parent == NULL)
+			return NULL;
+		n = parent;
+
+		next = html_flat_next_sibling(n);
+		if (box_for_node(n) != NULL)
+			box_construct_element_after(n, content);
+		if (next != NULL) {
+			dom_node_unref(n);
+			return next;
+		}
+	}
+
+	dom_node_unref(n);
+	return NULL;
 }
 
 

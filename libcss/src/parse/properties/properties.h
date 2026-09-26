@@ -505,6 +505,21 @@ css_error css__parse_justify_self(css_language *c,
 css_error css__parse_line_clamp(css_language *c,
 		const parserutils_vector *vector, int32_t *ctx,
 		css_style *result);
+css_error css__parse_mask_image(css_language *c,
+		const parserutils_vector *vector, int32_t *ctx,
+		css_style *result);
+css_error css__parse_mask_size(css_language *c,
+		const parserutils_vector *vector, int32_t *ctx,
+		css_style *result);
+css_error css__parse_mask_position(css_language *c,
+		const parserutils_vector *vector, int32_t *ctx,
+		css_style *result);
+css_error css__parse_mask_repeat(css_language *c,
+		const parserutils_vector *vector, int32_t *ctx,
+		css_style *result);
+css_error css__parse_mask(css_language *c,
+		const parserutils_vector *vector, int32_t *ctx,
+		css_style *result);
 css_error css__parse_object_fit(css_language *c,
 		const parserutils_vector *vector, int32_t *ctx,
 		css_style *result);

@@ -264,6 +264,11 @@ const stringmap_entry stringmap[LAST_KNOWN] = {
 	SMAP("justify-self"),
 	SMAP("pointer-events"),
 	SMAP("line-clamp"),
+	SMAP("mask-image"),
+	SMAP("mask-size"),
+	SMAP("mask-position"),
+	SMAP("mask-repeat"),
+	SMAP("mask"),
 	SMAP("border-radius"),
 	SMAP("grid-column"),
 	SMAP("grid-row"),
@@ -283,6 +288,11 @@ const stringmap_entry stringmap[LAST_KNOWN] = {
 	SMAP("-webkit-line-clamp"),
 	SMAP("-webkit-background-size"),
 	SMAP("grid-template"),
+	SMAP("-webkit-mask-image"),
+	SMAP("-webkit-mask-size"),
+	SMAP("-webkit-mask-position"),
+	SMAP("-webkit-mask-repeat"),
+	SMAP("-webkit-mask"),
 
 	SMAP("inherit"),
 	SMAP("unset"),
@@ -543,6 +553,7 @@ const stringmap_entry stringmap[LAST_KNOWN] = {
 	SMAP("inline-grid"),
 	SMAP("sticky"),
 	SMAP("calc"),
+	SMAP("contents"),
 
 	/* Named colours */
 	SMAP("aliceblue"),

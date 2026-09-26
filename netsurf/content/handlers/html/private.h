@@ -222,6 +222,13 @@ typedef struct html_content {
 	/** Objects of the tree being replaced, for reuse by the new one */
 	struct content_html_object *rebuild_old_objects;
 
+	/** display: contents boxes (outside the tree, chained by next) */
+	struct box *contents_boxes;
+
+	/** hashes of scoped shadow stylesheets already added */
+	uint32_t *shadow_css_hashes;
+	unsigned int shadow_css_count;
+
 } html_content;
 
 /**

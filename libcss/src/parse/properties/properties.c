@@ -190,6 +190,11 @@ const css_prop_handler property_handlers[LAST_PROP + 1 - FIRST_PROP] =
 	css__parse_justify_self,
 	css__parse_pointer_events,
 	css__parse_line_clamp,
+	css__parse_mask_image,
+	css__parse_mask_size,
+	css__parse_mask_position,
+	css__parse_mask_repeat,
+	css__parse_mask,
 	css__parse_border_radius,
 	css__parse_grid_column,
 	css__parse_grid_row,
@@ -209,6 +214,11 @@ const css_prop_handler property_handlers[LAST_PROP + 1 - FIRST_PROP] =
 	css__parse_line_clamp,
 	css__parse_background_size,
 	css__parse_grid_template,
+	css__parse_mask_image,
+	css__parse_mask_size,
+	css__parse_mask_position,
+	css__parse_mask_repeat,
+	css__parse_mask,
 };
 
 /** Mapping from property bytecode index to bytecode unit class mask. */
@@ -370,4 +380,9 @@ const uint32_t property_unit_mask[CSS_N_PROPERTIES] = {
 	[CSS_PROP_JUSTIFY_SELF] = 0,
 	[CSS_PROP_POINTER_EVENTS] = 0,
 	[CSS_PROP_LINE_CLAMP] = 0,
+	[CSS_PROP_MASK_IMAGE] = 0,
+	[CSS_PROP_MASK_SIZE] = 0,
+	[CSS_PROP_MASK_POSITION] = 0,
+	[CSS_PROP_MASK_REPEAT] = 0,
+	[CSS_PROP_MASK] = 0,
 };

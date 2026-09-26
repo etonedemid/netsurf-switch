@@ -205,6 +205,7 @@ static void html_rebuild_cb(void *p)
 	int *old_bctx;
 	struct box *old_layout;
 	struct content_html_iframe *old_iframes;
+	struct box *old_contents;
 	dom_node *html = NULL;
 	dom_node *focus_node = NULL;
 	nserror err;
@@ -262,6 +263,8 @@ static void html_rebuild_cb(void *p)
 	old_bctx = c->bctx;
 	old_layout = c->layout;
 	old_iframes = c->iframe;
+	old_contents = c->contents_boxes;
+	c->contents_boxes = NULL;
 	c->bctx = NULL;
 	c->iframe = NULL;
 	c->rebuild_old_objects = c->object_list;
@@ -280,6 +283,7 @@ static void html_rebuild_cb(void *p)
 		c->bctx = old_bctx;
 		c->layout = old_layout;
 		c->iframe = old_iframes;
+		c->contents_boxes = old_contents;
 		c->object_list = c->rebuild_old_objects;
 		c->rebuild_old_objects = NULL;
 		imagemap_extract(c);
@@ -294,6 +298,7 @@ static void html_rebuild_cb(void *p)
 		browser_window_rebind_iframes(c->bw);
 
 	html_rebuild_forget_boxes(old_layout);
+	html_rebuild_forget_boxes(old_contents);
 	html_rebuild_free_old_objects(c);
 	if (old_bctx != NULL)
 		talloc_free(old_bctx);

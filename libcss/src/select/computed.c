@@ -225,6 +225,11 @@ css_error css_computed_style_destroy(css_computed_style *style)
 	lwc_string_unref(style->i.justify_self);
 	lwc_string_unref(style->i.pointer_events);
 	lwc_string_unref(style->i.line_clamp);
+	lwc_string_unref(style->i.mask_image);
+	lwc_string_unref(style->i.mask_size);
+	lwc_string_unref(style->i.mask_position);
+	lwc_string_unref(style->i.mask_repeat);
+	lwc_string_unref(style->i.mask);
 
 	if (style->calc != NULL)
 		css_calculator_unref(style->calc);
@@ -536,6 +541,16 @@ uint8_t css_computed_raw(const css_computed_style *style,
 		return get_pointer_events(style, value);
 	case CSS_PROP_LINE_CLAMP:
 		return get_line_clamp(style, value);
+	case CSS_PROP_MASK_IMAGE:
+		return get_mask_image(style, value);
+	case CSS_PROP_MASK_SIZE:
+		return get_mask_size(style, value);
+	case CSS_PROP_MASK_POSITION:
+		return get_mask_position(style, value);
+	case CSS_PROP_MASK_REPEAT:
+		return get_mask_repeat(style, value);
+	case CSS_PROP_MASK:
+		return get_mask(style, value);
 	default:
 		break;
 	}
@@ -1103,6 +1118,9 @@ uint8_t css_computed_display(const css_computed_style *style,
 
 	if (display == CSS_DISPLAY_NONE)
 		return display; /* 1. */
+
+	if (display == CSS_DISPLAY_CONTENTS)
+		return root ? CSS_DISPLAY_BLOCK : display;
 
 	if ((position == CSS_POSITION_ABSOLUTE ||
 			position == CSS_POSITION_FIXED) /* 2. */ ||

@@ -50,6 +50,7 @@
 #include "html/box_manipulate.h"
 #include "html/box_construct.h"
 #include "html/box_special.h"
+#include "html/inline_svg.h"
 #include "html/box_textarea.h"
 #include "html/form_internal.h"
 
@@ -1926,7 +1927,11 @@ convert_special_elements(dom_node *node,
 		break;
 
 	default:
-		res = true;
+		if (html_inline_svg_is_svg(node))
+			res = html_inline_svg_box(node, content, box,
+					convert_children);
+		else
+			res = true;
 	}
 
 	return res;

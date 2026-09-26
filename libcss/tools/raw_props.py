@@ -33,5 +33,10 @@ RAW_PROPS = [
     ('justify_self', 0),
     ('pointer_events', 1),
     ('line_clamp', 0),
+    ('mask_image', 0),
+    ('mask_size', 0),
+    ('mask_position', 0),
+    ('mask_repeat', 0),
+    ('mask', 0),
 ]
 FIRST_ID = 0x07e

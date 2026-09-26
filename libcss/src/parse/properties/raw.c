@@ -54,6 +54,9 @@ static bool raw_append(struct raw_value *rv, const char *s, size_t len)
 	return true;
 }
 
+/** language of the declaration being read (for url() resolution) */
+static css_language *raw_lang;
+
 static bool raw_append_lwc(struct raw_value *rv, lwc_string *s)
 {
 	return raw_append(rv, lwc_string_data(s), lwc_string_length(s));
@@ -79,9 +82,22 @@ static bool raw_append_token(struct raw_value *rv, const css_token *t)
 	case CSS_TOKEN_STRING:
 		return raw_append(rv, "\"", 1) && raw_append_lwc(rv, t->idata) &&
 				raw_append(rv, "\"", 1);
-	case CSS_TOKEN_URI:
+	case CSS_TOKEN_URI: {
+		lwc_string *uri = NULL;
+		bool ok;
+		if (raw_lang != NULL && raw_lang->sheet->resolve(
+				raw_lang->sheet->resolve_pw,
+				raw_lang->sheet->url, t->idata, &uri) == CSS_OK &&
+				uri != NULL) {
+			ok = raw_append(rv, "url(", 4) &&
+					raw_append_lwc(rv, uri) &&
+					raw_append(rv, ")", 1);
+			lwc_string_unref(uri);
+			return ok;
+		}
 		return raw_append(rv, "url(", 4) && raw_append_lwc(rv, t->idata) &&
 				raw_append(rv, ")", 1);
+	}
 	default:
 		/* Unexpected token type; ignore it */
 		return true;
@@ -264,7 +280,9 @@ static css_error parse_raw(css_language *c,
 	if (rv == NULL)
 		return CSS_NOMEM;
 
+	raw_lang = c;
 	error = raw_read(vector, ctx, rv);
+	raw_lang = NULL;
 	if (error == CSS_OK) {
 		if (rv->ncomp == 1 && rv->nslash == 0 && !rv->comma &&
 				lwc_string_caseless_isequal(
@@ -327,6 +345,11 @@ RAW_PARSER(object_position, OBJECT_POSITION)
 RAW_PARSER(justify_self, JUSTIFY_SELF)
 RAW_PARSER(pointer_events, POINTER_EVENTS)
 RAW_PARSER(line_clamp, LINE_CLAMP)
+RAW_PARSER(mask_image, MASK_IMAGE)
+RAW_PARSER(mask_size, MASK_SIZE)
+RAW_PARSER(mask_position, MASK_POSITION)
+RAW_PARSER(mask_repeat, MASK_REPEAT)
+RAW_PARSER(mask, MASK)
 
 /**
  * Text of component range [from, to) of a raw value

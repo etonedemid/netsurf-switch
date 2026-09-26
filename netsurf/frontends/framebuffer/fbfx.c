@@ -668,3 +668,512 @@ nserror fbfx_layer_end(const struct redraw_context *ctx,
 	l->pixels = NULL;
 	return NSERROR_OK;
 }
+
+static bool fx_tint_on;
+static colour fx_tint_colour;
+
+/* ------------------------------------------------------------------ */
+/* Anti-aliased path rendering (SVG)                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Coverage accumulation raster: each edge adds its signed area
+ * contribution to the cells it crosses; a running sum along each row
+ * then yields the winding coverage (as in font-rs).
+ */
+struct fx_raster {
+	float *a;
+	int x0, y0; /* device origin of the raster */
+	int w, h;   /* area in pixels; rows are w + 3 wide */
+};
+
+static void fx_raster_line(struct fx_raster *r, float px0, float py0,
+		float px1, float py1)
+{
+	float dir, dxdy, x, fx0, fy0, fx1, fy1;
+	int y, ystart, yend, stride = r->w + 3;
+
+	fx0 = px0 - r->x0; fy0 = py0 - r->y0;
+	fx1 = px1 - r->x0; fy1 = py1 - r->y0;
+	if (fabsf(fy0 - fy1) <= 1e-6f)
+		return;
+	if (fy0 < fy1) {
+		dir = 1.0f;
+	} else {
+		float t;
+		dir = -1.0f;
+		t = fx0; fx0 = fx1; fx1 = t;
+		t = fy0; fy0 = fy1; fy1 = t;
+	}
+	if (fy1 <= 0 || fy0 >= r->h)
+		return;
+	dxdy = (fx1 - fx0) / (fy1 - fy0);
+	x = fx0;
+	if (fy0 < 0) {
+		x -= fy0 * dxdy;
+		ystart = 0;
+	} else {
+		ystart = (int)fy0;
+	}
+	yend = (int)ceilf(fy1);
+	if (yend > r->h)
+		yend = r->h;
+
+	for (y = ystart; y < yend; y++) {
+		float *row = r->a + y * stride;
+		float dy = fminf((float)(y + 1), fy1) - fmaxf((float)y, fy0);
+		float xnext = x + dxdy * dy;
+		float d = dy * dir;
+		float xa = x < xnext ? x : xnext;
+		float xb = x < xnext ? xnext : x;
+		float xa_c, xb_c, xaf;
+		int xai, xbi;
+
+		/* clamp horizontally: area left of the raster still
+		 * accumulates into column 0 */
+		xa_c = fminf(fmaxf(xa, 0.0f), (float)r->w + 1);
+		xb_c = fminf(fmaxf(xb, 0.0f), (float)r->w + 1);
+		xaf = floorf(xa_c);
+		xai = (int)xaf;
+		xbi = (int)ceilf(xb_c);
+
+		if (xbi <= xai + 1) {
+			float xmf = 0.5f * (xa_c + xb_c) - xaf;
+			row[xai] += d - d * xmf;
+			row[xai + 1] += d * xmf;
+		} else {
+			float s = 1.0f / (xb_c - xa_c);
+			float x0f = xa_c - xaf;
+			float a0 = 0.5f * s * (1.0f - x0f) * (1.0f - x0f);
+			float x1f = xb_c - (float)xbi + 1.0f;
+			float am = 0.5f * s * x1f * x1f;
+			int xi;
+
+			row[xai] += d * a0;
+			if (xbi == xai + 2) {
+				row[xai + 1] += d * (1.0f - a0 - am);
+			} else {
+				float a1 = s * (1.5f - x0f);
+				float a2;
+				row[xai + 1] += d * (a1 - a0);
+				for (xi = xai + 2; xi < xbi - 1; xi++)
+					row[xi] += d * s;
+				a2 = a1 + (float)(xbi - xai - 3) * s;
+				row[xbi - 1] += d * (1.0f - a2 - am);
+			}
+			row[xbi] += d * am;
+		}
+		x = xnext;
+	}
+}
+
+/** composite accumulated coverage onto the surface */
+static void fx_raster_fill(struct fx_raster *r, const struct fx_surface *s,
+		colour c)
+{
+	int x, y, stride = r->w + 3;
+	int cr = NS_R(c), cg = NS_G(c), cb = NS_B(c), ca = NS_A(c);
+	int alpha = ca + (ca >> 7);
+
+	for (y = 0; y < r->h; y++) {
+		float acc = 0;
+		float *row = r->a + y * stride;
+		int dy = r->y0 + y;
+		uint32_t *px;
+
+		if (dy < s->cy0 || dy >= s->cy1)
+			continue;
+		px = s->ptr + dy * s->stride;
+		for (x = 0; x < r->w; x++) {
+			int dx = r->x0 + x, cov;
+			float v;
+			acc += row[x];
+			v = fabsf(acc);
+			if (v < 0.002f || dx < s->cx0 || dx >= s->cx1)
+				continue;
+			cov = v >= 1.0f ? 256 : (int)(v * 256.0f);
+			fx_blend(s, px + dx, cr, cg, cb, (cov * alpha) >> 8);
+		}
+	}
+}
+
+/** a flattened path: subpaths of points */
+struct fx_poly {
+	float *pt;     /* x,y pairs */
+	int *start;    /* subpath start indices (in points) */
+	bool *closed;  /* per subpath */
+	int npt, cap;
+	int nsub, subcap;
+};
+
+static bool fx_poly_point(struct fx_poly *p, float x, float y)
+{
+	if (p->npt == p->cap) {
+		int cap = p->cap ? p->cap * 2 : 256;
+		float *n = realloc(p->pt, cap * 2 * sizeof(float));
+		if (n == NULL)
+			return false;
+		p->pt = n;
+		p->cap = cap;
+	}
+	p->pt[p->npt * 2] = x;
+	p->pt[p->npt * 2 + 1] = y;
+	p->npt++;
+	return true;
+}
+
+static bool fx_poly_sub(struct fx_poly *p)
+{
+	if (p->nsub == p->subcap) {
+		int cap = p->subcap ? p->subcap * 2 : 16;
+		int *ns = realloc(p->start, cap * sizeof(int));
+		bool *nc;
+		if (ns == NULL)
+			return false;
+		p->start = ns;
+		nc = realloc(p->closed, cap * sizeof(bool));
+		if (nc == NULL)
+			return false;
+		p->closed = nc;
+		p->subcap = cap;
+	}
+	p->start[p->nsub] = p->npt;
+	p->closed[p->nsub] = false;
+	p->nsub++;
+	return true;
+}
+
+static void fx_poly_free(struct fx_poly *p)
+{
+	free(p->pt);
+	free(p->start);
+	free(p->closed);
+}
+
+#define FX_TX(t, x, y) ((t)[0] * (x) + (t)[2] * (y) + (t)[4])
+#define FX_TY(t, x, y) ((t)[1] * (x) + (t)[3] * (y) + (t)[5])
+
+/** flatten path commands into device-space polylines */
+static bool fx_flatten(const float *p, unsigned int n, const float t[6],
+		struct fx_poly *out)
+{
+	unsigned int i = 0;
+	float cx = 0, cy = 0, sx = 0, sy = 0;
+	bool open = false;
+
+	while (i < n) {
+		int cmd = (int)p[i];
+		switch (cmd) {
+		case PLOTTER_PATH_MOVE:
+			if (i + 2 >= n)
+				return true;
+			cx = sx = FX_TX(t, p[i + 1], p[i + 2]);
+			cy = sy = FX_TY(t, p[i + 1], p[i + 2]);
+			if (!fx_poly_sub(out) || !fx_poly_point(out, cx, cy))
+				return false;
+			open = true;
+			i += 3;
+			break;
+		case PLOTTER_PATH_LINE:
+			if (i + 2 >= n)
+				return true;
+			if (!open) {
+				if (!fx_poly_sub(out) ||
+				    !fx_poly_point(out, cx, cy))
+					return false;
+				open = true;
+			}
+			cx = FX_TX(t, p[i + 1], p[i + 2]);
+			cy = FX_TY(t, p[i + 1], p[i + 2]);
+			if (!fx_poly_point(out, cx, cy))
+				return false;
+			i += 3;
+			break;
+		case PLOTTER_PATH_BEZIER: {
+			float x1, y1, x2, y2, x3, y3, len;
+			int k, steps;
+			if (i + 6 >= n)
+				return true;
+			if (!open) {
+				if (!fx_poly_sub(out) ||
+				    !fx_poly_point(out, cx, cy))
+					return false;
+				open = true;
+			}
+			x1 = FX_TX(t, p[i + 1], p[i + 2]);
+			y1 = FX_TY(t, p[i + 1], p[i + 2]);
+			x2 = FX_TX(t, p[i + 3], p[i + 4]);
+			y2 = FX_TY(t, p[i + 3], p[i + 4]);
+			x3 = FX_TX(t, p[i + 5], p[i + 6]);
+			y3 = FX_TY(t, p[i + 5], p[i + 6]);
+			/* segment count from control polygon length */
+			len = hypotf(x1 - cx, y1 - cy) + hypotf(x2 - x1, y2 - y1) +
+				hypotf(x3 - x2, y3 - y2);
+			steps = (int)(sqrtf(len) * 1.5f) + 2;
+			if (steps > 64)
+				steps = 64;
+			for (k = 1; k <= steps; k++) {
+				float u = (float)k / steps, v = 1 - u;
+				float bx = v * v * v * cx + 3 * v * v * u * x1 +
+					3 * v * u * u * x2 + u * u * u * x3;
+				float by = v * v * v * cy + 3 * v * v * u * y1 +
+					3 * v * u * u * y2 + u * u * u * y3;
+				if (!fx_poly_point(out, bx, by))
+					return false;
+			}
+			cx = x3;
+			cy = y3;
+			i += 7;
+			break;
+		}
+		case PLOTTER_PATH_CLOSE:
+			if (open && out->nsub > 0) {
+				out->closed[out->nsub - 1] = true;
+				open = false;
+			}
+			cx = sx;
+			cy = sy;
+			i += 1;
+			break;
+		default:
+			return true;
+		}
+	}
+	return true;
+}
+
+/** add a polygon with consistent (positive area) orientation */
+static void fx_raster_poly(struct fx_raster *r, const float *pt, int n)
+{
+	float area = 0;
+	int k;
+
+	for (k = 0; k < n; k++) {
+		int j = (k + 1) % n;
+		area += pt[k * 2] * pt[j * 2 + 1] - pt[j * 2] * pt[k * 2 + 1];
+	}
+	for (k = 0; k < n; k++) {
+		int j = (k + 1) % n;
+		if (area >= 0)
+			fx_raster_line(r, pt[k * 2], pt[k * 2 + 1],
+					pt[j * 2], pt[j * 2 + 1]);
+		else
+			fx_raster_line(r, pt[j * 2], pt[j * 2 + 1],
+					pt[k * 2], pt[k * 2 + 1]);
+	}
+}
+
+static void fx_raster_disc(struct fx_raster *r, float cx, float cy, float rad)
+{
+	float pt[32];
+	int k, n = rad < 2 ? 8 : 16;
+
+	for (k = 0; k < n; k++) {
+		float a = (float)k * 6.2831853f / n;
+		pt[k * 2] = cx + rad * cosf(a);
+		pt[k * 2 + 1] = cy + rad * sinf(a);
+	}
+	fx_raster_poly(r, pt, n);
+}
+
+/** stroke outline: a quad per segment plus round joins */
+static void fx_raster_stroke(struct fx_raster *r, const struct fx_poly *p,
+		float width)
+{
+	float hw = width * 0.5f;
+	int s;
+
+	for (s = 0; s < p->nsub; s++) {
+		int a = p->start[s];
+		int b = (s + 1 < p->nsub) ? p->start[s + 1] : p->npt;
+		int k, last = b - 1;
+
+		for (k = a; k < b; k++) {
+			float x0 = p->pt[k * 2], y0 = p->pt[k * 2 + 1];
+			float x1, y1, dx, dy, l, q[8];
+			int j = k + 1;
+
+			if (j > last) {
+				if (!p->closed[s] || b - a < 3)
+					break;
+				j = a;
+			}
+			x1 = p->pt[j * 2];
+			y1 = p->pt[j * 2 + 1];
+			dx = x1 - x0;
+			dy = y1 - y0;
+			l = hypotf(dx, dy);
+			if (l < 1e-4f)
+				continue;
+			dx = dx / l * hw;
+			dy = dy / l * hw;
+			q[0] = x0 - dy; q[1] = y0 + dx;
+			q[2] = x1 - dy; q[3] = y1 + dx;
+			q[4] = x1 + dy; q[5] = y1 - dx;
+			q[6] = x0 + dy; q[7] = y0 - dx;
+			fx_raster_poly(r, q, 4);
+		}
+		/* joins (and round caps) where segments meet */
+		if (hw >= 0.75f) {
+			for (k = a; k < b; k++) {
+				bool end = (k == a || k == last);
+				if (end && p->closed[s])
+					end = false;
+				fx_raster_disc(r, p->pt[k * 2], p->pt[k * 2 + 1],
+						end ? hw * 0.98f : hw);
+			}
+		}
+	}
+}
+
+/* exported interface documented in fbfx.h */
+nserror fbfx_path(const struct redraw_context *ctx,
+		const plot_style_t *pstyle, const float *p, unsigned int n,
+		const float transform[6])
+{
+	struct fx_surface s;
+	struct fx_poly poly;
+	struct fx_raster r;
+	float minx = 1e30f, miny = 1e30f, maxx = -1e30f, maxy = -1e30f;
+	float stroke_w = 0, pad;
+	bool fill, stroke;
+	colour fill_c, stroke_c;
+	int k, x0, y0, x1, y1;
+
+	fill = pstyle->fill_type != PLOT_OP_TYPE_NONE &&
+			NS_A(pstyle->fill_colour) > 0;
+	stroke = pstyle->stroke_type != PLOT_OP_TYPE_NONE &&
+			NS_A(pstyle->stroke_colour) > 0;
+	fill_c = fx_tint_on ? fx_tint_colour : pstyle->fill_colour;
+	stroke_c = fx_tint_on ? fx_tint_colour : pstyle->stroke_colour;
+	if (stroke) {
+		float sc = sqrtf(fabsf(transform[0] * transform[3] -
+				transform[1] * transform[2]));
+		stroke_w = plot_style_fixed_to_float(pstyle->stroke_width) * sc;
+		if (stroke_w <= 0)
+			stroke_w = sc > 0 ? sc : 1;
+		/* hairlines keep a visible weight */
+		if (stroke_w < 1)
+			stroke_w = 1;
+	}
+	if ((!fill && !stroke) || n == 0 || !fx_get_surface(&s))
+		return NSERROR_OK;
+
+	memset(&poly, 0, sizeof(poly));
+	if (!fx_flatten(p, n, transform, &poly) || poly.npt == 0) {
+		fx_poly_free(&poly);
+		return NSERROR_OK;
+	}
+
+	for (k = 0; k < poly.npt; k++) {
+		minx = fminf(minx, poly.pt[k * 2]);
+		maxx = fmaxf(maxx, poly.pt[k * 2]);
+		miny = fminf(miny, poly.pt[k * 2 + 1]);
+		maxy = fmaxf(maxy, poly.pt[k * 2 + 1]);
+	}
+	pad = stroke ? stroke_w * 0.5f + 1 : 1;
+	x0 = (int)floorf(minx - pad);
+	y0 = (int)floorf(miny - pad);
+	x1 = (int)ceilf(maxx + pad);
+	y1 = (int)ceilf(maxy + pad);
+	if (x0 < s.cx0) x0 = s.cx0;
+	if (y0 < s.cy0) y0 = s.cy0;
+	if (x1 > s.cx1) x1 = s.cx1;
+	if (y1 > s.cy1) y1 = s.cy1;
+	if (x0 >= x1 || y0 >= y1) {
+		fx_poly_free(&poly);
+		return NSERROR_OK;
+	}
+
+	r.x0 = x0;
+	r.y0 = y0;
+	r.w = x1 - x0;
+	r.h = y1 - y0;
+	r.a = calloc((size_t)(r.w + 3) * r.h, sizeof(float));
+	if (r.a == NULL) {
+		fx_poly_free(&poly);
+		return NSERROR_OK;
+	}
+
+	if (fill) {
+		int sub;
+		for (sub = 0; sub < poly.nsub; sub++) {
+			int a = poly.start[sub];
+			int b = sub + 1 < poly.nsub ? poly.start[sub + 1] :
+					poly.npt;
+			/* fills are implicitly closed */
+			for (k = a; k < b; k++) {
+				int j = k + 1 < b ? k + 1 : a;
+				fx_raster_line(&r, poly.pt[k * 2],
+						poly.pt[k * 2 + 1],
+						poly.pt[j * 2], poly.pt[j * 2 + 1]);
+			}
+		}
+		fx_raster_fill(&r, &s, fill_c);
+	}
+
+	if (stroke) {
+		if (fill)
+			memset(r.a, 0, (size_t)(r.w + 3) * r.h * sizeof(float));
+		fx_raster_stroke(&r, &poly, stroke_w);
+		fx_raster_fill(&r, &s, stroke_c);
+	}
+
+	free(r.a);
+	fx_poly_free(&poly);
+	return NSERROR_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/* Tint mode (mask-image)                                             */
+/* ------------------------------------------------------------------ */
+
+/* exported interface documented in fbfx.h */
+nserror fbfx_tint(const struct redraw_context *ctx, bool enable, colour c)
+{
+	fx_tint_on = enable;
+	fx_tint_colour = c;
+	return NSERROR_OK;
+}
+
+/* exported interface documented in fbfx.h */
+bool fbfx_tint_bitmap(struct nsfb_s *bm, int x, int y, int width, int height)
+{
+	struct fx_surface s;
+	int bw, bh, bstride, dx, dy;
+	enum nsfb_format_e fmt;
+	uint8_t *bptr;
+	int r = NS_R(fx_tint_colour), g = NS_G(fx_tint_colour);
+	int b = NS_B(fx_tint_colour), ta = NS_A(fx_tint_colour);
+	int x0, y0, x1, y1;
+
+	if (!fx_tint_on)
+		return false;
+	if (width <= 0 || height <= 0 || !fx_get_surface(&s))
+		return true;
+	if (nsfb_get_geometry(bm, &bw, &bh, &fmt) != 0 ||
+	    nsfb_get_buffer(bm, &bptr, &bstride) != 0 || bptr == NULL ||
+	    bw <= 0 || bh <= 0)
+		return true;
+
+	x0 = x > s.cx0 ? x : s.cx0;
+	y0 = y > s.cy0 ? y : s.cy0;
+	x1 = x + width < s.cx1 ? x + width : s.cx1;
+	y1 = y + height < s.cy1 ? y + height : s.cy1;
+	ta = ta + (ta >> 7);
+
+	for (dy = y0; dy < y1; dy++) {
+		int sy = (dy - y) * bh / height;
+		const uint32_t *srow = (const uint32_t *)(bptr + sy * bstride);
+		uint32_t *drow = s.ptr + dy * s.stride;
+		for (dx = x0; dx < x1; dx++) {
+			int sx = (dx - x) * bw / width;
+			int a = (srow[sx] >> 24) & 0xff;
+			if (fmt == NSFB_FMT_XBGR8888 || fmt == NSFB_FMT_XRGB8888)
+				a = 255;
+			a = a + (a >> 7);
+			fx_blend(&s, drow + dx, r, g, b, (a * ta) >> 8);
+		}
+	}
+	return true;
+}

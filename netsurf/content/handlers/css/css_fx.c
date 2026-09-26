@@ -979,3 +979,167 @@ bool cssfx_translation(const css_computed_style *style,
 	*dy = (int)ty;
 	return *dx != 0 || *dy != 0;
 }
+
+/* ------------------------------------------------------------------ */
+/* mask-image                                                         */
+/* ------------------------------------------------------------------ */
+
+/** find the first url(...) in text; returns malloc()ed contents */
+static char *first_url(const char *t)
+{
+	const char *u, *e;
+	char *out;
+
+	if (t == NULL)
+		return NULL;
+	u = strstr(t, "url(");
+	if (u == NULL)
+		return NULL;
+	u += 4;
+	while (*u == ' ' || *u == '"' || *u == '\'')
+		u++;
+	e = u;
+	while (*e != '\0' && *e != ')' && *e != '"' && *e != '\'')
+		e++;
+	while (e > u && e[-1] == ' ')
+		e--;
+	if (e == u)
+		return NULL;
+	out = malloc(e - u + 1);
+	if (out != NULL) {
+		memcpy(out, u, e - u);
+		out[e - u] = '\0';
+	}
+	return out;
+}
+
+/* exported interface documented in css_fx.h */
+char *cssfx_mask_url(const css_computed_style *style)
+{
+	char *u = first_url(cssfx_raw(style, CSS_PROP_MASK_IMAGE));
+
+	if (u == NULL)
+		u = first_url(cssfx_raw(style, CSS_PROP_MASK));
+	return u;
+}
+
+/** parse a position keyword or percentage into a fraction */
+static bool mask_pos_word(const char **p, float *out, bool *vertical)
+{
+	char *end;
+	float v;
+
+	*vertical = false;
+	if (match_word(p, "left") || match_word(p, "top")) {
+		*vertical = ((*p)[-1] == 'p');
+		*out = 0;
+		return true;
+	}
+	if (match_word(p, "right") || match_word(p, "bottom")) {
+		*vertical = ((*p)[-1] == 'm');
+		*out = 1;
+		return true;
+	}
+	if (match_word(p, "center")) {
+		*out = 0.5f;
+		return true;
+	}
+	v = strtof(*p, &end);
+	if (end != *p && *end == '%') {
+		*out = v / 100.0f;
+		*p = end + 1;
+		return true;
+	}
+	return false;
+}
+
+/* exported interface documented in css_fx.h */
+bool cssfx_mask_geometry(const css_computed_style *style,
+		const css_unit_ctx *uctx, int bw, int bh,
+		struct cssfx_mask *out)
+{
+	const char *size = cssfx_raw(style, CSS_PROP_MASK_SIZE);
+	const char *pos = cssfx_raw(style, CSS_PROP_MASK_POSITION);
+	const char *rep = cssfx_raw(style, CSS_PROP_MASK_REPEAT);
+	const char *sh = cssfx_raw(style, CSS_PROP_MASK);
+	const char *p;
+
+	out->fit = CSSFX_MASK_STRETCH;
+	out->w = out->h = -1;
+	out->px = out->py = 0;
+	out->repeat = true;
+
+	/* the shorthand provides defaults for the longhands */
+	if (sh != NULL) {
+		/* skip the url(), which contains slashes of its own */
+		const char *rest = strrchr(sh, ')');
+		const char *slash = strchr(rest != NULL ? rest : sh, '/');
+		if (strstr(sh, "no-repeat") != NULL)
+			out->repeat = false;
+		if (strstr(sh, "center") != NULL)
+			out->px = out->py = 0.5f;
+		if (slash != NULL && size == NULL)
+			size = slash + 1;
+		else if (size == NULL && strstr(sh, "contain") != NULL)
+			size = "contain";
+		else if (size == NULL && strstr(sh, "cover") != NULL)
+			size = "cover";
+	}
+
+	if (rep != NULL)
+		out->repeat = strstr(rep, "no-repeat") == NULL;
+
+	if (size != NULL) {
+		p = size;
+		skip_ws(&p);
+		if (match_word(&p, "contain")) {
+			out->fit = CSSFX_MASK_CONTAIN;
+		} else if (match_word(&p, "cover")) {
+			out->fit = CSSFX_MASK_COVER;
+		} else {
+			float w = -1, h = -1;
+			if (!match_word(&p, "auto") &&
+			    !cssfx_length(&p, style, uctx, bw, &w))
+				w = -1;
+			skip_ws(&p);
+			if (*p != '\0' && *p != ',' && *p != ' ') {
+				if (!match_word(&p, "auto") &&
+				    !cssfx_length(&p, style, uctx, bh, &h))
+					h = -1;
+			} else if (w >= 0) {
+				h = -2; /* auto: keep aspect */
+			}
+			if (w >= 0 || h >= 0) {
+				out->fit = CSSFX_MASK_EXPLICIT;
+				out->w = w;
+				out->h = h;
+			}
+		}
+	}
+
+	if (pos != NULL) {
+		float a, b;
+		bool va, vb;
+		p = pos;
+		skip_ws(&p);
+		if (mask_pos_word(&p, &a, &va)) {
+			skip_ws(&p);
+			if (mask_pos_word(&p, &b, &vb)) {
+				if (va && !vb) {
+					out->px = b;
+					out->py = a;
+				} else {
+					out->px = a;
+					out->py = b;
+				}
+			} else if (va) {
+				out->py = a;
+				out->px = 0.5f;
+			} else {
+				out->px = a;
+				out->py = 0.5f;
+			}
+		}
+	}
+	return true;
+}

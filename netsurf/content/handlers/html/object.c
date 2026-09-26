@@ -91,9 +91,15 @@ html_object_failed(struct box *box, html_content *content, bool background)
 static void
 html_object_done(struct box *box,
 		 hlcache_handle *object,
-		 bool background)
+		 bool background,
+		 bool mask)
 {
 	struct box *b;
+
+	if (mask) {
+		box->mask = object;
+		return;
+	}
 
 	if (background) {
 		box->background = object;
@@ -184,7 +190,7 @@ html_object_callback(hlcache_handle *object,
 							box->height : 0);
 
 			/* Adjust parent content for new object size */
-			html_object_done(box, object, o->background);
+			html_object_done(box, object, o->background, o->mask);
 			if (c->base.status == CONTENT_STATUS_READY ||
 					c->base.status == CONTENT_STATUS_DONE)
 				content__reformat(&c->base, false,
@@ -197,7 +203,7 @@ html_object_callback(hlcache_handle *object,
 		c->base.active--;
 		NSLOG(netsurf, INFO, "%d fetches active", c->base.active);
 
-		html_object_done(box, object, o->background);
+		html_object_done(box, object, o->background, o->mask);
 
 		if (c->base.status != CONTENT_STATUS_LOADING &&
 				box->flags & REPLACE_DIM) {
@@ -706,13 +712,13 @@ nserror html_object_free_objects(html_content *html)
 }
 
 
-/* exported interface documented in html/object.h */
-bool
-html_fetch_object(html_content *c,
+static bool
+html__fetch_object(html_content *c,
 		  nsurl *url,
 		  struct box *box,
 		  content_type permitted_types,
-		  bool background)
+		  bool background,
+		  bool mask)
 {
 	struct content_html_object *object;
 	hlcache_handle_callback object_callback;
@@ -732,7 +738,8 @@ html_fetch_object(html_content *c,
 			bool match = false;
 			if (object->box == NULL || object->content == NULL ||
 			    object->box->node != box->node ||
-			    object->background != background)
+			    object->background != background ||
+			    object->mask != mask)
 				continue;
 			if (content_get_type(object->content) == CONTENT_HTML)
 				continue;
@@ -749,7 +756,7 @@ html_fetch_object(html_content *c,
 			if (content_get_status(object->content) ==
 					CONTENT_STATUS_DONE) {
 				html_object_done(box, object->content,
-						background);
+						background, mask);
 			}
 			return true;
 		}
@@ -775,6 +782,7 @@ html_fetch_object(html_content *c,
 	object->box = box;
 	object->permitted_types = permitted_types;
 	object->background = background;
+	object->mask = mask;
 
 	error = hlcache_handle_retrieve(url,
 					HLCACHE_RETRIEVE_SNIFF_TYPE,
@@ -801,4 +809,24 @@ html_fetch_object(html_content *c,
 	}
 
 	return true;
+}
+
+
+/* exported interface documented in html/object.h */
+bool
+html_fetch_object(html_content *c,
+		  nsurl *url,
+		  struct box *box,
+		  content_type permitted_types,
+		  bool background)
+{
+	return html__fetch_object(c, url, box, permitted_types, background,
+			false);
+}
+
+
+/* exported interface documented in html/object.h */
+bool html_fetch_mask_object(html_content *c, nsurl *url, struct box *box)
+{
+	return html__fetch_object(c, url, box, CONTENT_IMAGE, false, true);
 }

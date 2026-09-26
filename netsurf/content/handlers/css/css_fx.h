@@ -123,4 +123,33 @@ bool cssfx_layer_effects(const css_computed_style *style,
 bool cssfx_translation(const css_computed_style *style,
 		const css_unit_ctx *uctx, int w, int h, int *dx, int *dy);
 
+/** how a mask image is sized within the box */
+enum cssfx_mask_fit {
+	CSSFX_MASK_STRETCH,  /**< 100% 100% (or auto for SVG) */
+	CSSFX_MASK_CONTAIN,
+	CSSFX_MASK_COVER,
+	CSSFX_MASK_EXPLICIT, /**< width/height given */
+};
+
+struct cssfx_mask {
+	enum cssfx_mask_fit fit;
+	float w, h;      /**< explicit size (px), <0 for auto */
+	float px, py;    /**< position as fraction of free space (0..1) */
+	bool repeat;
+};
+
+/**
+ * Get the url() of an element's mask image.
+ *
+ * eturn malloc()ed absolute URL or NULL if no image mask
+ */
+char *cssfx_mask_url(const css_computed_style *style);
+
+/**
+ * Get mask sizing and positioning.
+ */
+bool cssfx_mask_geometry(const css_computed_style *style,
+		const css_unit_ctx *uctx, int bw, int bh,
+		struct cssfx_mask *out);
+
 #endif

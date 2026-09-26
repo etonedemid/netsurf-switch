@@ -43,6 +43,7 @@
 #include "html/html.h"
 #include "html/private.h"
 #include "html/css.h"
+#include "html/shadow.h"
 
 static nsurl *html_default_stylesheet_url;
 static nsurl *html_adblock_stylesheet_url;
@@ -144,6 +145,74 @@ html_convert_css_callback(hlcache_handle *css,
 }
 
 
+/**
+ * Scope a stylesheet from a declarative shadow tree to its host tag.
+ *
+ * \param c      content
+ * \param node   the style element
+ * \param style  in: sheet text; out: possibly replaced scoped text
+ * \return false if the sheet duplicates one already added
+ */
+static bool
+html_stylesheet_scope_shadow(html_content *c, dom_node *node,
+		dom_string **style)
+{
+	dom_node *host = html_shadow_host_of(node);
+	dom_string *name = NULL, *scoped_str = NULL;
+	char tag[128];
+	char *scoped;
+	uint32_t hash = 2166136261u, *hashes;
+	const char *p;
+	size_t i, n;
+
+	if (host == NULL)
+		return true;
+	if (dom_node_get_node_name(host, &name) != DOM_NO_ERR ||
+			name == NULL) {
+		dom_node_unref(host);
+		return true;
+	}
+	dom_node_unref(host);
+	n = dom_string_byte_length(name);
+	if (n >= sizeof(tag))
+		n = sizeof(tag) - 1;
+	for (i = 0; i < n; i++)
+		tag[i] = tolower((unsigned char)dom_string_data(name)[i]);
+	tag[n] = '\0';
+	dom_string_unref(name);
+
+	scoped = html_shadow_scope_css(dom_string_data(*style),
+			dom_string_byte_length(*style), tag);
+	if (scoped == NULL)
+		return true;
+
+	for (p = scoped; *p != '\0'; p++) {
+		hash ^= (uint8_t)*p;
+		hash *= 16777619u;
+	}
+	for (i = 0; i < c->shadow_css_count; i++) {
+		if (c->shadow_css_hashes[i] == hash) {
+			free(scoped);
+			return false;
+		}
+	}
+	if ((c->shadow_css_count & 15) != 0 || (hashes = realloc(
+			c->shadow_css_hashes, (c->shadow_css_count + 16) *
+			sizeof(uint32_t))) != NULL) {
+		if ((c->shadow_css_count & 15) == 0)
+			c->shadow_css_hashes = hashes;
+		c->shadow_css_hashes[c->shadow_css_count++] = hash;
+	}
+
+	if (dom_string_create((const uint8_t *)scoped, strlen(scoped),
+			&scoped_str) == DOM_NO_ERR) {
+		dom_string_unref(*style);
+		*style = scoped_str;
+	}
+	free(scoped);
+	return true;
+}
+
 static nserror
 html_stylesheet_from_domnode(html_content *c,
 			     dom_node *node,
@@ -163,6 +232,12 @@ html_stylesheet_from_domnode(html_content *c,
 	exc = dom_node_get_text_content(node, &style);
 	if ((exc != DOM_NO_ERR) || (style == NULL)) {
 		NSLOG(netsurf, INFO, "No text content");
+		return NSERROR_OK;
+	}
+
+	if (html_stylesheet_scope_shadow(c, node, &style) == false) {
+		/* an identical scoped sheet is already present */
+		dom_string_unref(style);
 		return NSERROR_OK;
 	}
 
@@ -543,6 +618,9 @@ nserror html_css_free_stylesheets(html_content *html)
 		}
 	}
 	free(html->stylesheets);
+	free(html->shadow_css_hashes);
+	html->shadow_css_hashes = NULL;
+	html->shadow_css_count = 0;
 
 	return NSERROR_OK;
 }

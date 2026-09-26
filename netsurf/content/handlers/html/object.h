@@ -46,6 +46,11 @@ struct nsurl;
 bool html_fetch_object(struct html_content *c, struct nsurl *url, struct box *box, content_type permitted_types, bool background);
 
 /**
+ * Start a fetch for a box's mask-image.
+ */
+bool html_fetch_mask_object(struct html_content *c, struct nsurl *url, struct box *box);
+
+/**
  * release memory of content objects associated with a HTML content
  *
  * The content objects contents should have been previously closed

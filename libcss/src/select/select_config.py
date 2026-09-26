@@ -138,6 +138,11 @@ style = {
     ('justify_self', 1, 'string'),
     ('pointer_events', 1, 'string'),
     ('line_clamp', 1, 'string'),
+    ('mask_image', 1, 'string'),
+    ('mask_size', 1, 'string'),
+    ('mask_position', 1, 'string'),
+    ('mask_repeat', 1, 'string'),
+    ('mask', 1, 'string'),
     # Style group, arrays
     ('font_family', 3, 'string_arr', None, None,
         'Encode font family as an array of string objects, terminated with a '

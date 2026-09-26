@@ -1343,6 +1343,97 @@ static bool html_redraw_box_children(const html_content *html, struct box *box,
 }
 
 /**
+ * Draw a box's mask-image filled with its background colour.
+ *
+ * \return true if the box has a url() mask (whether or not it could
+ *         be drawn), in which case the normal background is not drawn
+ */
+static bool html_redraw_mask(struct box *box, int x, int y,
+		int bw, int bh, const struct rect *clip, float scale,
+		const html_content *html, const struct redraw_context *ctx)
+{
+	const char *mi = cssfx_raw(box->style, CSS_PROP_MASK_IMAGE);
+	const char *ms = cssfx_raw(box->style, CSS_PROP_MASK);
+	struct content_redraw_data data;
+	struct cssfx_mask g;
+	css_color bgcol;
+	int iw, ih, dw, dh;
+
+	if ((mi == NULL || strstr(mi, "url(") == NULL) &&
+	    (ms == NULL || strstr(ms, "url(") == NULL))
+		return false;
+	if (box->mask == NULL || ctx->plot->tint == NULL ||
+	    content_get_status(box->mask) != CONTENT_STATUS_DONE ||
+	    bw <= 0 || bh <= 0)
+		return true;
+	css_computed_background_color(box->style, &bgcol);
+	if (nscss_color_is_transparent(bgcol))
+		return true;
+
+	cssfx_mask_geometry(box->style, &html->unit_len_ctx,
+			bw / scale, bh / scale, &g);
+	iw = content_get_width(box->mask);
+	ih = content_get_height(box->mask);
+	if (iw <= 0 || ih <= 0) {
+		iw = bw;
+		ih = bh;
+	}
+	switch (g.fit) {
+	case CSSFX_MASK_CONTAIN:
+	case CSSFX_MASK_COVER: {
+		float sx = (float)bw / iw, sy = (float)bh / ih;
+		float sc = (g.fit == CSSFX_MASK_CONTAIN) ?
+				(sx < sy ? sx : sy) : (sx > sy ? sx : sy);
+		dw = iw * sc + 0.5f;
+		dh = ih * sc + 0.5f;
+		break;
+	}
+	case CSSFX_MASK_EXPLICIT:
+		dw = g.w >= 0 ? g.w * scale : -1;
+		dh = g.h >= 0 ? g.h * scale : -1;
+		if (dw < 0 && dh < 0) {
+			dw = iw * scale;
+			dh = ih * scale;
+		} else if (dw < 0) {
+			dw = (float)iw * dh / ih;
+		} else if (dh < 0) {
+			dh = (float)ih * dw / iw;
+		}
+		break;
+	default:
+		/* auto: intrinsic size, but scalable images fill */
+		if (content_get_type(box->mask) == CONTENT_IMAGE &&
+				content_get_bitmap(box->mask) == NULL) {
+			dw = bw;
+			dh = bh;
+		} else {
+			dw = iw * scale;
+			dh = ih * scale;
+		}
+		break;
+	}
+	if (dw <= 0 || dh <= 0)
+		return true;
+
+	data.x = x + (bw - dw) * g.px;
+	data.y = y + (bh - dh) * g.py;
+	data.width = dw;
+	data.height = dh;
+	data.background_colour = 0xffffff;
+	data.scale = scale;
+	data.repeat_x = false;
+	data.repeat_y = false;
+
+	if (ctx->plot->clip(ctx, clip) != NSERROR_OK)
+		return true;
+	ctx->plot->tint(ctx, true, nscss_color_to_ns(bgcol));
+	content_redraw(box->mask, &data, clip, ctx);
+	ctx->plot->tint(ctx, false, 0);
+	return true;
+}
+
+
+/**
  * Recursively draw a box.
  *
  * \param  html	     html content
@@ -1660,6 +1751,25 @@ static bool html_redraw_box_contents(const html_content *html,
 	 * inlines */
 
 	bg_box = html_redraw_find_bg_box(box);
+
+	/* mask-image: the background colour shows through the mask */
+	if (bg_box == box && box->style != NULL) {
+		struct rect mc;
+		mc.x0 = x - border_left < r.x0 ? r.x0 : x - border_left;
+		mc.y0 = y - border_top < r.y0 ? r.y0 : y - border_top;
+		mc.x1 = x + padding_width + border_right < r.x1 ?
+				x + padding_width + border_right : r.x1;
+		mc.y1 = y + padding_height + border_bottom < r.y1 ?
+				y + padding_height + border_bottom : r.y1;
+		if (html_redraw_mask(box, x - border_left, y - border_top,
+				padding_width + border_left + border_right,
+				padding_height + border_top + border_bottom,
+				&mc, scale, html, ctx)) {
+			bg_box = NULL;
+			if (ctx->plot->clip(ctx, &r) != NSERROR_OK)
+				return false;
+		}
+	}
 
 	/* bg_box == NULL implies that this box should not have
 	* its background rendered. Otherwise filter out linebreaks,

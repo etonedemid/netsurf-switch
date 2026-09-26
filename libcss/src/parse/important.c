@@ -143,6 +143,11 @@ void css__make_style_important(css_style *style)
 			case CSS_PROP_JUSTIFY_SELF:
 			case CSS_PROP_POINTER_EVENTS:
 			case CSS_PROP_LINE_CLAMP:
+			case CSS_PROP_MASK_IMAGE:
+			case CSS_PROP_MASK_SIZE:
+			case CSS_PROP_MASK_POSITION:
+			case CSS_PROP_MASK_REPEAT:
+			case CSS_PROP_MASK:
 				assert(BACKGROUND_IMAGE_URI == (enum op_background_image)RAW_SET);
 				/* Fall through */
 			case CSS_PROP_BACKGROUND_IMAGE:

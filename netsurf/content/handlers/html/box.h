@@ -88,7 +88,8 @@ typedef enum {
 	REPLACE_DIM = 1 << 9,	/* replaced element has given dimensions */
 	IFRAME      = 1 << 10,	/* box contains an iframe */
 	CONVERT_CHILDREN = 1 << 11,  /* wanted children converting */
-	IS_REPLACED = 1 << 12	/* box is a replaced element */
+	IS_REPLACED = 1 << 12,	/* box is a replaced element */
+	CONTENTS_BOX = 1 << 13	/* display: contents; not in the tree */
 } box_flags;
 
 
@@ -433,6 +434,11 @@ struct box {
 	 * Background image for this box, or NULL if none
 	 */
 	struct hlcache_handle *background;
+
+	/**
+	 * Mask image object (mask-image), or NULL.
+	 */
+	struct hlcache_handle *mask;
 
 
 	/**

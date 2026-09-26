@@ -531,6 +531,96 @@ static bool pp_media_feature(slice f)
 }
 
 /** evaluate a media query list against the device */
+/**
+ * Rewrite media query range syntax, which libcss does not parse, into
+ * min-/max- features: (width > 600px) -> (min-width: 600.01px).
+ */
+static void pp_media_prelude_out(buf *out, slice q)
+{
+	size_t i = 0;
+
+	while (i < q.n) {
+		if (q.s[i] == '(') {
+			size_t j = i + 1;
+			int depth = 1;
+			bool range = false;
+			while (j < q.n && depth > 0) {
+				if (q.s[j] == '(')
+					depth++;
+				else if (q.s[j] == ')')
+					depth--;
+				else if (depth == 1 && (q.s[j] == '<' ||
+						q.s[j] == '>'))
+					range = true;
+				j++;
+			}
+			if (range && depth == 0) {
+				char tmp[128], a[64], op1[3] = "", b[64],
+					op2[3] = "", c[64], res[160];
+				size_t n = j - i - 2;
+				int k;
+				res[0] = '\0';
+				if (n < sizeof(tmp)) {
+					memcpy(tmp, q.s + i + 1, n);
+					tmp[n] = '\0';
+					k = sscanf(tmp, " %63[^<>=] %2[<>=] %63[^<>=]"
+						" %2[<>=] %63s", a, op1, b, op2, c);
+					if (k == 3) {
+						slice sa = sl_trim((slice){ a, strlen(a) });
+						slice sb = sl_trim((slice){ b, strlen(b) });
+						bool nf = isalpha((unsigned char)sa.s[0]);
+						slice nm = nf ? sa : sb;
+						slice val = nf ? sb : sa;
+						float v;
+						char o = op1[0];
+						bool eq = op1[1] == '=';
+						const char *dim = sl_prefix(nm, "height") ||
+							sl_prefix(nm, "block-size") ?
+							"height" : "width";
+						if (!nf)
+							o = (o == '<') ? '>' : (o == '>' ? '<' : o);
+						if (pp_media_length(val, &v)) {
+							if (o == '<')
+								snprintf(res, sizeof(res),
+									"(max-%s: %.2fpx)", dim,
+									eq ? v : v - 0.01f);
+							else if (o == '>')
+								snprintf(res, sizeof(res),
+									"(min-%s: %.2fpx)", dim,
+									eq ? v : v + 0.01f);
+							else
+								snprintf(res, sizeof(res),
+									"(%s: %.2fpx)", dim, v);
+						}
+					} else if (k == 5) {
+						slice sb = sl_trim((slice){ b, strlen(b) });
+						float lo, hi;
+						const char *dim = sl_prefix(sb, "height") ?
+							"height" : "width";
+						if (op1[0] == '<' && op2[0] == '<' &&
+						    pp_media_length((slice){ a, strlen(a) }, &lo) &&
+						    pp_media_length((slice){ c, strlen(c) }, &hi))
+							snprintf(res, sizeof(res),
+								"(min-%s: %.2fpx) and "
+								"(max-%s: %.2fpx)", dim,
+								op1[1] == '=' ? lo : lo + 0.01f,
+								dim,
+								op2[1] == '=' ? hi : hi - 0.01f);
+					}
+				}
+				if (res[0] != '\0')
+					buf_str(out, res);
+				else
+					buf_add(out, q.s + i, j - i);
+				i = j;
+				continue;
+			}
+		}
+		buf_chr(out, q.s[i]);
+		i++;
+	}
+}
+
 static bool pp_media_eval(slice q)
 {
 	slice list[32];
@@ -649,6 +739,8 @@ static bool pp_known_property(slice name)
 		"border-top-right-radius", "border-bottom-left-radius",
 		"border-bottom-right-radius", "pointer-events",
 		"line-clamp", "-webkit-line-clamp", "object-position",
+		"mask", "mask-image", "mask-size", "mask-position", "mask-repeat",
+		"-webkit-mask", "-webkit-mask-image", "-webkit-mask-size",
 		"transform-origin", "justify-self", "grid-auto-flow",
 		"grid-auto-columns", "grid-auto-rows", "word-wrap",
 		NULL
@@ -932,7 +1024,12 @@ static int pp_selector_rewrite(slice sel, buf *out, int budget)
 						return 0;
 					}
 					buf_str(&res, ":not(");
-					buf_add(&res, args[k].s, args[k].n);
+					if (sl_eq(args[k], ":focus-within") ||
+					    sl_eq(args[k], ":focus-visible"))
+						buf_str(&res, ":focus");
+					else
+						buf_add(&res, args[k].s,
+								args[k].n);
 					buf_chr(&res, ')');
 				}
 				i = close;
@@ -940,7 +1037,8 @@ static int pp_selector_rewrite(slice sel, buf *out, int budget)
 			}
 
 			/* map near-equivalents */
-			if (!element && sl_eq(name, "focus-visible")) {
+			if (!element && (sl_eq(name, "focus-visible") ||
+					sl_eq(name, "focus-within"))) {
 				buf_str(&res, ":focus");
 				i = ne;
 				continue;
@@ -1696,7 +1794,7 @@ static void pp_at_rule(pp_ctx *pp, slice name, slice prelude, slice block,
 			return;
 		pp->media_ok = pp->media_ok && pp_media_eval(prelude);
 		buf_str(&pp->out, "@media ");
-		buf_add(&pp->out, prelude.s, prelude.n);
+		pp_media_prelude_out(&pp->out, prelude);
 		buf_chr(&pp->out, '{');
 		pp_rules(pp, block, parent, nparent, frame);
 		buf_chr(&pp->out, '}');
