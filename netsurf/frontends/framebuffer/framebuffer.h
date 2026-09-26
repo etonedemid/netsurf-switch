@@ -37,4 +37,7 @@ bool framebuffer_set_cursor(struct fbtk_bitmap *bm);
  */
 nsfb_t *framebuffer_set_surface(nsfb_t *new_nsfb);
 
+/** current plot target surface */
+nsfb_t *framebuffer_current_surface(void);
+
 #endif

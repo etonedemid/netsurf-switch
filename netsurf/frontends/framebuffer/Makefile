@@ -197,7 +197,7 @@ $(eval $(foreach V,$(filter FB_FONT_$(NETSURF_FB_FONTLIB)_%,$(.VARIABLES)),$(cal
 # ----------------------------------------------------------------------------
 
 # S_FRONTEND are sources purely for the framebuffer build
-S_FRONTEND := gui.c framebuffer.c schedule.c bitmap.c fetch.c switch_player.c	\
+S_FRONTEND := gui.c framebuffer.c fbfx.c schedule.c bitmap.c fetch.c switch_player.c	\
 	switch_audio.c							\
 	findfile.c corewindow.c local_history.c clipboard.c
 

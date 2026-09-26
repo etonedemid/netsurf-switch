@@ -50,6 +50,7 @@
 #include "content/content_protected.h"
 #include "content/textsearch.h"
 #include "css/utils.h"
+#include "css/css_fx.h"
 #include "desktop/selection.h"
 #include "desktop/print.h"
 #include "desktop/scrollbar.h"
@@ -68,14 +69,47 @@
 bool html_redraw_debug = false;
 
 /**
+ * Are all four borders solid and the same colour?
+ */
+static bool html_redraw_borders_uniform(const struct box *box)
+{
+	int i;
+
+	for (i = 0; i < 4; i++) {
+		if (box->border[i].width == 0)
+			continue;
+		if (box->border[i].style != CSS_BORDER_STYLE_SOLID)
+			return false;
+		if (box->border[i].c != box->border[TOP].c)
+			return false;
+	}
+	return box->border[TOP].width > 0;
+}
+
+/**
  * Determine if a box has a background that needs drawing
  *
  * \param box  Box to consider
  * \return True if box has a background, false otherwise.
  */
+static const char *html_redraw_box_gradient(const css_computed_style *style)
+{
+	lwc_string *url = NULL;
+
+	if (style != NULL &&
+	    css_computed_background_image(style, &url) ==
+			CSS_BACKGROUND_IMAGE_IMAGE && url != NULL &&
+	    strncmp(lwc_string_data(url), "gradient:", 9) == 0)
+		return lwc_string_data(url) + 9;
+	return NULL;
+}
+
 static bool html_redraw_box_has_background(struct box *box)
 {
 	if (box->background != NULL)
+		return true;
+
+	if (html_redraw_box_gradient(box->style) != NULL)
 		return true;
 
 	if (box->style != NULL) {
@@ -592,6 +626,67 @@ static bool html_redraw_file(int x, int y, int width, int height,
  * \return true if successful, false otherwise
  */
 
+/**
+ * Apply background-size to an image's intrinsic dimensions.
+ *
+ * \param style   style with the background-size
+ * \param width   background positioning area width
+ * \param height  background positioning area height
+ * \param img_w   updated with the image width to use
+ * \param img_h   updated with the image height to use
+ */
+static void html_redraw_background_size(const css_computed_style *style,
+		const css_unit_ctx *unit_len_ctx, int width, int height,
+		int *img_w, int *img_h)
+{
+	const char *t = cssfx_raw(style, CSS_PROP_BACKGROUND_SIZE);
+	float iw = *img_w, ih = *img_h;
+	float w = -1, h = -1;
+
+	if (t == NULL || iw <= 0 || ih <= 0)
+		return;
+
+	while (*t == ' ')
+		t++;
+	if (strncasecmp(t, "cover", 5) == 0 ||
+			strncasecmp(t, "contain", 7) == 0) {
+		float sx = width / iw, sy = height / ih;
+		float sc = (t[1] == 'o' && t[2] == 'v') ?
+				(sx > sy ? sx : sy) : (sx < sy ? sx : sy);
+		*img_w = iw * sc + 0.5f;
+		*img_h = ih * sc + 0.5f;
+		return;
+	}
+	if (strncasecmp(t, "auto", 4) != 0) {
+		float v;
+		if (cssfx_length(&t, style, unit_len_ctx, width, &v))
+			w = v;
+	} else {
+		t += 4;
+	}
+	while (*t == ' ')
+		t++;
+	if (*t != '\0' && strncasecmp(t, "auto", 4) != 0) {
+		float v;
+		if (cssfx_length(&t, style, unit_len_ctx, height, &v))
+			h = v;
+	}
+	if (w >= 0 && h >= 0) {
+		*img_w = w;
+		*img_h = h;
+	} else if (w >= 0) {
+		*img_w = w;
+		*img_h = ih * w / iw;
+	} else if (h >= 0) {
+		*img_h = h;
+		*img_w = iw * h / ih;
+	}
+	if (*img_w < 1)
+		*img_w = 1;
+	if (*img_h < 1)
+		*img_h = 1;
+}
+
 static bool html_redraw_background(int x, int y, struct box *box, float scale,
 		const struct rect *clip, colour *background_colour,
 		struct box *background,
@@ -604,6 +699,7 @@ static bool html_redraw_background(int x, int y, struct box *box, float scale,
 	bool plot_content;
 	bool clip_to_children = false;
 	struct box *clip_box = box;
+	struct rect gradient_box = { 0, 0, 0, 0 };
 	int ox = x, oy = y;
 	int width, height;
 	css_fixed hpos = 0, vpos = 0;
@@ -611,6 +707,8 @@ static bool html_redraw_background(int x, int y, struct box *box, float scale,
 	struct box *parent;
 	struct rect r = *clip;
 	css_color bgcol;
+	const char *gradient_text;
+	int img_w = 0, img_h = 0;
 	plot_style_t pstyle_fill_bg = {
 		.fill_type = PLOT_OP_TYPE_SOLID,
 		.fill_colour = *background_colour,
@@ -621,8 +719,9 @@ static bool html_redraw_background(int x, int y, struct box *box, float scale,
 		return true;
 
 	plot_content = (background->background != NULL);
+	gradient_text = html_redraw_box_gradient(background->style);
 
-	if (plot_content) {
+	if (plot_content || gradient_text != NULL) {
 		if (!box->parent) {
 			/* Root element, special case:
 			 * background origin calc. is based on margin box */
@@ -640,6 +739,21 @@ static bool html_redraw_background(int x, int y, struct box *box, float scale,
 			height = box->padding[TOP] + box->height +
 					box->padding[BOTTOM];
 		}
+		if (!plot_content) {
+			/* gradient: only its geometry is needed */
+			gradient_box.x0 = x;
+			gradient_box.y0 = y;
+			gradient_box.x1 = x + width * scale;
+			gradient_box.y1 = y + height * scale;
+			goto positioned;
+		}
+
+		/* handle background-size */
+		img_w = content_get_width(background->background);
+		img_h = content_get_height(background->background);
+		html_redraw_background_size(background->style, unit_len_ctx,
+				width, height, &img_w, &img_h);
+
 		/* handle background-repeat */
 		switch (css_computed_background_repeat(background->style)) {
 		case CSS_BACKGROUND_REPEAT_REPEAT:
@@ -668,8 +782,7 @@ static bool html_redraw_background(int x, int y, struct box *box, float scale,
 		css_computed_background_position(background->style,
 				&hpos, &hunit, &vpos, &vunit);
 		if (hunit == CSS_UNIT_PCT) {
-			x += (width -
-				content_get_width(background->background)) *
+			x += (width - img_w) *
 				scale * FIXTOFLT(hpos) / 100.;
 		} else {
 			x += (int) (FIXTOFLT(css_unit_len2device_px(
@@ -678,8 +791,7 @@ static bool html_redraw_background(int x, int y, struct box *box, float scale,
 		}
 
 		if (vunit == CSS_UNIT_PCT) {
-			y += (height -
-				content_get_height(background->background)) *
+			y += (height - img_h) *
 				scale * FIXTOFLT(vpos) / 100.;
 		} else {
 			y += (int) (FIXTOFLT(css_unit_len2device_px(
@@ -687,6 +799,7 @@ static bool html_redraw_background(int x, int y, struct box *box, float scale,
 					vpos, vunit)) * scale);
 		}
 	}
+positioned:
 
 	/* special case for table rows as their background needs
 	 * to be clipped to all the cells */
@@ -754,10 +867,27 @@ static bool html_redraw_background(int x, int y, struct box *box, float scale,
 				}
 			}
 		}
+		/* plot a gradient background image */
+		if (gradient_text != NULL && ctx->plot->gradient != NULL) {
+			struct plot_gradient g;
+			if (cssfx_gradient(gradient_text, background->style,
+					unit_len_ctx, &gradient_box, &g)) {
+				res = ctx->plot->clip(ctx, &r);
+				if (res != NSERROR_OK)
+					return false;
+				ctx->plot->gradient(ctx, &r, &g);
+				/* text anti-aliasing background */
+				if (g.nstops > 0 &&
+				    ((g.stop_colour[g.nstops / 2] >> 24) & 0xff) < 0x80)
+					*background_colour = g.stop_colour[
+						g.nstops / 2] & 0xffffff;
+			}
+		}
+
 		/* and plot the image */
 		if (plot_content) {
-			width = content_get_width(background->background);
-			height = content_get_height(background->background);
+			width = img_w;
+			height = img_h;
 
 			/* ensure clip area only as large as required */
 			if (!repeat_x) {
@@ -1228,13 +1358,19 @@ static bool html_redraw_box_children(const html_content *html, struct box *box,
  * x, y, clip_[xy][01] are in target coordinates.
  */
 
-bool html_redraw_box(const html_content *html, struct box *box,
+static bool html_redraw_box_contents(const html_content *html,
+		struct box *box,
 		int x_parent, int y_parent,
 		const struct rect *clip, const float scale,
 		colour current_background_color,
 		const struct redraw_context *ctx)
 {
 	const struct plotter_table *plot = ctx->plot;
+	struct plot_radii radii;
+	bool rounded = false;
+	struct rect border_box;
+	struct plot_shadow box_shadow_list[CSSFX_MAX_SHADOWS];
+	int box_inset_shadows = 0;
 	int x, y;
 	int width, height;
 	int padding_left, padding_top, padding_width, padding_height;
@@ -1464,6 +1600,62 @@ bool html_redraw_box(const html_content *html, struct box *box,
 			return false;
 	}
 
+	/* rounded corners and box shadows */
+	border_box.x0 = x - border_left;
+	border_box.y0 = y - border_top;
+	border_box.x1 = x + padding_width + border_right;
+	border_box.y1 = y + padding_height + border_bottom;
+	if (box->style != NULL && box->type != BOX_TEXT &&
+	    box->type != BOX_BR && box->type != BOX_INLINE_END &&
+	    (box->type != BOX_INLINE || box->object) &&
+	    ctx->plot->layer_begin != NULL) {
+		struct plot_shadow shadows[CSSFX_MAX_SHADOWS];
+		int nshadows, i;
+
+		rounded = cssfx_radii(box->style, &html->unit_len_ctx,
+				border_box.x1 - border_box.x0,
+				border_box.y1 - border_box.y0, scale, &radii);
+
+		nshadows = cssfx_box_shadows(box->style, &html->unit_len_ctx,
+				scale, shadows, CSSFX_MAX_SHADOWS);
+		if (nshadows > 0 && ctx->plot->shadow != NULL) {
+			/* outer shadows paint outside the box, so use the
+			 * parent's clip; the last shadow is painted first */
+			if (ctx->plot->clip(ctx, clip) != NSERROR_OK)
+				return false;
+			for (i = nshadows - 1; i >= 0; i--) {
+				if (!shadows[i].inset)
+					ctx->plot->shadow(ctx, &border_box,
+						rounded ? &radii : NULL,
+						&shadows[i]);
+			}
+			if (ctx->plot->clip(ctx, &r) != NSERROR_OK)
+				return false;
+		}
+
+		if (rounded) {
+			struct rect lr = border_box;
+			if (lr.x0 < r.x0) lr.x0 = r.x0;
+			if (lr.y0 < r.y0) lr.y0 = r.y0;
+			if (lr.x1 > r.x1) lr.x1 = r.x1;
+			if (lr.y1 > r.y1) lr.y1 = r.y1;
+			if (ctx->plot->layer_begin(ctx, &lr) != NSERROR_OK)
+				rounded = false;
+		}
+
+		/* inset shadows are painted after the background */
+		if (nshadows > 0 && ctx->plot->shadow != NULL) {
+			for (i = 0; i < nshadows; i++) {
+				if (shadows[i].inset)
+					break;
+			}
+			if (i == nshadows)
+				nshadows = 0;
+		}
+		box_inset_shadows = nshadows;
+		memcpy(box_shadow_list, shadows, sizeof(shadows));
+	}
+
 	/* background colour and image for block level content and replaced
 	 * inlines */
 
@@ -1534,10 +1726,57 @@ bool html_redraw_box(const html_content *html, struct box *box,
 	       box->gadget->type == GADGET_TEXTBOX ||
 	       box->gadget->type == GADGET_PASSWORD))) &&
 	    (border_top || border_right || border_bottom || border_left)) {
-		if (!html_redraw_borders(box, x_parent, y_parent,
+		if (rounded && ctx->plot->rounded_fill != NULL &&
+		    html_redraw_borders_uniform(box)) {
+			/* the border is a ring between two rounded shapes */
+			struct plot_radii inner_radii;
+			struct rect inner;
+			int bw[4] = { border_top, border_right,
+				      border_bottom, border_left };
+			int i;
+
+			inner.x0 = x;
+			inner.y0 = y;
+			inner.x1 = x + padding_width;
+			inner.y1 = y + padding_height;
+			for (i = 0; i < 4; i++) {
+				/* corner i sits between sides i-1 and i */
+				int hs = (i == 0 || i == 3) ? bw[3] : bw[1];
+				int vs = (i == 0 || i == 1) ? bw[0] : bw[2];
+				inner_radii.h[i] = radii.h[i] - hs;
+				inner_radii.v[i] = radii.v[i] - vs;
+				if (inner_radii.h[i] < 0) inner_radii.h[i] = 0;
+				if (inner_radii.v[i] < 0) inner_radii.v[i] = 0;
+			}
+			ctx->plot->rounded_fill(ctx, &border_box, &radii,
+					&inner, &inner_radii,
+					nscss_color_to_ns(box->border[TOP].c));
+		} else if (!html_redraw_borders(box, x_parent, y_parent,
 				padding_width, padding_height, &r,
 				scale, ctx))
 			return false;
+	}
+
+	if (box_inset_shadows > 0) {
+		int i;
+		struct rect pbox = { x, y, x + padding_width,
+				     y + padding_height };
+		for (i = box_inset_shadows - 1; i >= 0; i--) {
+			if (box_shadow_list[i].inset)
+				ctx->plot->shadow(ctx, &pbox,
+						rounded ? &radii : NULL,
+						&box_shadow_list[i]);
+		}
+	}
+
+	if (rounded) {
+		struct plot_layer layer;
+		memset(&layer, 0, sizeof(layer));
+		layer.box = border_box;
+		layer.radii = radii;
+		layer.opacity = 1.0f;
+		layer.brightness = 1.0f;
+		ctx->plot->layer_end(ctx, &layer);
 	}
 
 	/* backgrounds and borders for non-replaced inlines */
@@ -1927,6 +2166,118 @@ bool html_redraw_box(const html_content *html, struct box *box,
 	}
 
 	return ((!plot->group_end) || (ctx->plot->group_end(ctx) == NSERROR_OK));
+}
+
+/**
+ * Recursively draw a box, applying transforms, opacity, filters and
+ * rounded overflow clipping.
+ */
+bool html_redraw_box(const html_content *html, struct box *box,
+		int x_parent, int y_parent,
+		const struct rect *clip, const float scale,
+		colour current_background_color,
+		const struct redraw_context *ctx)
+{
+	struct plot_layer layer;
+	bool use_layer = false;
+	bool clip_round = false;
+	int tx, ty;
+	bool ok;
+	struct rect area;
+	int x, y, bw, bh;
+
+	if (box->style == NULL || box->type == BOX_TEXT ||
+			box->type == BOX_INLINE_END || box->type == BOX_BR) {
+		return html_redraw_box_contents(html, box, x_parent, y_parent,
+				clip, scale, current_background_color, ctx);
+	}
+
+	bw = box->border[LEFT].width + box->padding[LEFT] + box->width +
+			box->padding[RIGHT] + box->border[RIGHT].width;
+	bh = box->border[TOP].width + box->padding[TOP] + box->height +
+			box->padding[BOTTOM] + box->border[BOTTOM].width;
+
+	if (cssfx_translation(box->style, &html->unit_len_ctx, bw, bh,
+			&tx, &ty)) {
+		x_parent += tx;
+		y_parent += ty;
+	}
+
+	if (ctx->plot->layer_begin == NULL || ctx->plot->layer_end == NULL) {
+		return html_redraw_box_contents(html, box, x_parent, y_parent,
+				clip, scale, current_background_color, ctx);
+	}
+
+	x = (x_parent + box->x - box->border[LEFT].width) * scale;
+	y = (y_parent + box->y - box->border[TOP].width) * scale;
+
+	use_layer = cssfx_layer_effects(box->style, &layer);
+
+	/* rounded clipping of replaced content and overflow */
+	if (box->object != NULL || box->flags & REPLACE_DIM ||
+			css_computed_overflow_x(box->style) !=
+					CSS_OVERFLOW_VISIBLE ||
+			css_computed_overflow_y(box->style) !=
+					CSS_OVERFLOW_VISIBLE) {
+		clip_round = cssfx_radii(box->style, &html->unit_len_ctx,
+				bw * scale, bh * scale, scale, &layer.radii);
+		if (clip_round) {
+			if (!use_layer) {
+				layer.opacity = 1.0f;
+				layer.brightness = 1.0f;
+			}
+			use_layer = true;
+		}
+	}
+
+	if (!use_layer) {
+		return html_redraw_box_contents(html, box, x_parent, y_parent,
+				clip, scale, current_background_color, ctx);
+	}
+
+	/* area covering the box and its descendants */
+	area.x0 = x + box->border[LEFT].width * scale +
+			box->descendant_x0 * scale;
+	area.y0 = y + box->border[TOP].width * scale +
+			box->descendant_y0 * scale;
+	area.x1 = x + box->border[LEFT].width * scale +
+			box->descendant_x1 * scale + 1;
+	area.y1 = y + box->border[TOP].width * scale +
+			box->descendant_y1 * scale + 1;
+	if (area.x0 > x) area.x0 = x;
+	if (area.y0 > y) area.y0 = y;
+	if (area.x1 < x + bw * scale) area.x1 = x + bw * scale;
+	if (area.y1 < y + bh * scale) area.y1 = y + bh * scale;
+	if (area.x0 < clip->x0) area.x0 = clip->x0;
+	if (area.y0 < clip->y0) area.y0 = clip->y0;
+	if (area.x1 > clip->x1) area.x1 = clip->x1;
+	if (area.y1 > clip->y1) area.y1 = clip->y1;
+	if (area.x0 >= area.x1 || area.y0 >= area.y1)
+		return true;
+
+	if (clip_round) {
+		layer.box.x0 = x;
+		layer.box.y0 = y;
+		layer.box.x1 = x + bw * scale;
+		layer.box.y1 = y + bh * scale;
+	} else {
+		/* no clipping: the layer shape is the whole area */
+		layer.box = area;
+		memset(&layer.radii, 0, sizeof(layer.radii));
+	}
+
+	if (ctx->plot->clip(ctx, clip) != NSERROR_OK)
+		return false;
+	if (ctx->plot->layer_begin(ctx, &area) != NSERROR_OK)
+		return html_redraw_box_contents(html, box, x_parent, y_parent,
+				clip, scale, current_background_color, ctx);
+
+	ok = html_redraw_box_contents(html, box, x_parent, y_parent,
+			clip, scale, current_background_color, ctx);
+
+	ctx->plot->clip(ctx, clip);
+	ctx->plot->layer_end(ctx, &layer);
+	return ok;
 }
 
 /**

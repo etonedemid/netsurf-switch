@@ -686,6 +686,7 @@ box_construct_element(struct box_construct_ctx *ctx, bool *convert_children)
 	/* Kick off fetch for any background image */
 	if (css_computed_background_image(box->style, &bgimage_uri) ==
 			CSS_BACKGROUND_IMAGE_IMAGE && bgimage_uri != NULL &&
+			strncmp(lwc_string_data(bgimage_uri), "gradient:", 9) != 0 &&
 			nsoption_bool(background_images) == true) {
 		nsurl *url;
 		nserror error;

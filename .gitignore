@@ -8,3 +8,4 @@ switch-dist/nsfb-stripped
 inst-native/
 build.log
 native.log
+__pycache__/

@@ -38,6 +38,7 @@
 #include "framebuffer/gui.h"
 #include "framebuffer/fbtk.h"
 #include "framebuffer/framebuffer.h"
+#include "framebuffer/fbfx.h"
 #include "framebuffer/font.h"
 #include "framebuffer/bitmap.h"
 
@@ -532,7 +533,13 @@ const struct plotter_table fb_plotters = {
 	.path = framebuffer_plot_path,
 	.bitmap = framebuffer_plot_bitmap,
 	.text = framebuffer_plot_text,
-	.option_knockout = true,
+	.rounded_fill = fbfx_rounded_fill,
+	.gradient = fbfx_gradient,
+	.shadow = fbfx_shadow,
+	.layer_begin = fbfx_layer_begin,
+	.layer_end = fbfx_layer_end,
+	/* knockout would reorder plots across compositing layers */
+	.option_knockout = false,
 };
 
 
@@ -644,6 +651,11 @@ bool
 framebuffer_set_cursor(struct fbtk_bitmap *bm)
 {
     return nsfb_cursor_set(nsfb, (nsfb_colour_t *)bm->pixdata, bm->width, bm->height, bm->width, bm->hot_x, bm->hot_y);
+}
+
+nsfb_t *framebuffer_current_surface(void)
+{
+	return nsfb;
 }
 
 nsfb_t *framebuffer_set_surface(nsfb_t *new_nsfb)

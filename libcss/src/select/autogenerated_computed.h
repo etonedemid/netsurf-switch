@@ -23,12 +23,16 @@ struct css_computed_style_i {
  * align_content                    3             
  * align_items                      3             
  * align_self                       3             
+ * aspect_ratio                     1             sizeof(ptr)
  * background_attachment            2             
  * background_color                 2               4
  * background_image                 1             sizeof(ptr)
  * background_position              1 + 10          8
  * background_repeat                3             
+ * background_size                  1             sizeof(ptr)
  * border_bottom_color              2               4
+ * border_bottom_left_radius        1             sizeof(ptr)
+ * border_bottom_right_radius       1             sizeof(ptr)
  * border_bottom_style              4             
  * border_bottom_width              3 + 5           4
  * border_collapse                  2             
@@ -40,9 +44,12 @@ struct css_computed_style_i {
  * border_right_width               3 + 5           4
  * border_spacing                   1 + 10          8
  * border_top_color                 2               4
+ * border_top_left_radius           1             sizeof(ptr)
+ * border_top_right_radius          1             sizeof(ptr)
  * border_top_style                 4             
  * border_top_width                 3 + 5           4
  * bottom                           2 + 5           4
+ * box_shadow                       1             sizeof(ptr)
  * box_sizing                       2             
  * break_after                      4             
  * break_before                     4             
@@ -63,6 +70,7 @@ struct css_computed_style_i {
  * display                          5             
  * empty_cells                      2             
  * fill_opacity                     1               4
+ * filter                           1             sizeof(ptr)
  * flex_basis                       2 + 5           4
  * flex_direction                   3             
  * flex_grow                        1               4
@@ -73,10 +81,23 @@ struct css_computed_style_i {
  * font_style                       2             
  * font_variant                     2             
  * font_weight                      4             
+ * grid_auto_columns                1             sizeof(ptr)
+ * grid_auto_flow                   1             sizeof(ptr)
+ * grid_auto_rows                   1             sizeof(ptr)
+ * grid_column_end                  1             sizeof(ptr)
+ * grid_column_start                1             sizeof(ptr)
+ * grid_row_end                     1             sizeof(ptr)
+ * grid_row_start                   1             sizeof(ptr)
+ * grid_template_areas              1             sizeof(ptr)
+ * grid_template_columns            1             sizeof(ptr)
+ * grid_template_rows               1             sizeof(ptr)
  * height                           2 + 5           4
  * justify_content                  3             
+ * justify_items                    1             sizeof(ptr)
+ * justify_self                     1             sizeof(ptr)
  * left                             2 + 5           4
  * letter_spacing                   2 + 5           4
+ * line_clamp                       1             sizeof(ptr)
  * line_height                      2 + 5           4
  * list_style_image                 1             sizeof(ptr)
  * list_style_position              2             
@@ -89,12 +110,15 @@ struct css_computed_style_i {
  * max_width                        2 + 5           4
  * min_height                       2 + 5           4
  * min_width                        2 + 5           4
+ * object_fit                       1             sizeof(ptr)
+ * object_position                  1             sizeof(ptr)
  * opacity                          1               4
  * order                            1               4
  * orphans                          1               4
  * outline_color                    2               4
  * outline_style                    4             
  * outline_width                    3 + 5           4
+ * overflow_wrap                    1             sizeof(ptr)
  * overflow_x                       3             
  * overflow_y                       3             
  * padding_bottom                   1 + 5           4
@@ -104,21 +128,28 @@ struct css_computed_style_i {
  * page_break_after                 3             
  * page_break_before                3             
  * page_break_inside                2             
+ * pointer_events                   1             sizeof(ptr)
  * position                         3             
  * right                            2 + 5           4
+ * row_gap                          1             sizeof(ptr)
  * stroke_opacity                   1               4
  * table_layout                     2             
  * text_align                       4             
  * text_decoration                  5             
  * text_indent                      1 + 5           4
+ * text_overflow                    1             sizeof(ptr)
+ * text_shadow                      1             sizeof(ptr)
  * text_transform                   3             
  * top                              2 + 5           4
+ * transform                        1             sizeof(ptr)
+ * transform_origin                 1             sizeof(ptr)
  * unicode_bidi                     2             
  * vertical_align                   4 + 5           4
  * visibility                       2             
  * white_space                      3             
  * widows                           1               4
  * width                            2 + 5           4
+ * word_break                       1             sizeof(ptr)
  * word_spacing                     2 + 5           4
  * writing_mode                     2             
  * z_index                          2               4
@@ -152,9 +183,9 @@ struct css_computed_style_i {
  * quotes                           1             sizeof(ptr)
  * 
  * ---                            ---             ---
- *                                464 bits        236 + 8sizeof(ptr) bytes
+ *                                495 bits        236 + 39sizeof(ptr) bytes
  *                                ===================
- *                                294 + 8sizeof(ptr) bytes
+ *                                298 + 39sizeof(ptr) bytes
  * 
  * Bit allocations:
  * 
@@ -202,25 +233,39 @@ struct css_computed_style_i {
  * border_bottom_color
  * 
  * 12 bbbbbbbbbbbaaaaaaaaaaavvvvvvvvvw
- * border_spacing; background_position; vertical_align; widows
+ * border_spacing; background_position; vertical_align; word_break
  * 
- * 13 bbbbpppaaagggooovvvjjjffflllcccs
+ * 13 bbbbpppaaagggooovvvjjjffflllcccw
  * border_bottom_style; position; page_break_before; page_break_after;
  * overflow_y; overflow_x; justify_content; font_family; flex_direction; clear;
- * stroke_opacity
+ * widows
  * 
- * 14 bbaaqorplfeicuCk................
- * background_color; background_attachment; quotes; orphans; order; opacity;
- * list_style_image; flex_shrink; flex_grow; fill_opacity; counter_reset;
- * counter_increment; color; background_image
+ * 14 bbaatrexsoqpvhdcjfliuygmGwnRIDAU
+ * background_color; background_attachment; transform_origin; transform;
+ * text_shadow; text_overflow; stroke_opacity; row_gap; quotes; pointer_events;
+ * overflow_wrap; orphans; order; opacity; object_position; object_fit;
+ * list_style_image; line_clamp; justify_self; justify_items;
+ * grid_template_rows; grid_template_columns; grid_template_areas;
+ * grid_row_start; grid_row_end; grid_column_start; grid_column_end;
+ * grid_auto_rows; grid_auto_flow; grid_auto_columns
+ * 
+ * 15 fliocurbdetmaks.................
+ * flex_shrink; flex_grow; filter; fill_opacity; counter_reset;
+ * counter_increment; color; box_shadow; border_top_right_radius;
+ * border_top_left_radius; border_bottom_right_radius;
+ * border_bottom_left_radius; background_size; background_image; aspect_ratio
  */
-	uint32_t bits[15];
+	uint32_t bits[16];
 	
+	lwc_string *aspect_ratio;
 	css_color background_color;
 	lwc_string *background_image;
 	css_fixed background_position_a;
 	css_fixed background_position_b;
+	lwc_string *background_size;
 	css_color border_bottom_color;
+	lwc_string *border_bottom_left_radius;
+	lwc_string *border_bottom_right_radius;
 	css_fixed border_bottom_width;
 	css_color border_left_color;
 	css_fixed border_left_width;
@@ -229,8 +274,11 @@ struct css_computed_style_i {
 	css_fixed border_spacing_a;
 	css_fixed border_spacing_b;
 	css_color border_top_color;
+	lwc_string *border_top_left_radius;
+	lwc_string *border_top_right_radius;
 	css_fixed border_top_width;
 	css_fixed bottom;
+	lwc_string *box_shadow;
 	css_fixed clip_a;
 	css_fixed clip_b;
 	css_fixed clip_c;
@@ -242,13 +290,27 @@ struct css_computed_style_i {
 	css_fixed column_rule_width;
 	css_fixed column_width;
 	css_fixed fill_opacity;
+	lwc_string *filter;
 	css_fixed flex_basis;
 	css_fixed flex_grow;
 	css_fixed flex_shrink;
 	css_fixed font_size;
+	lwc_string *grid_auto_columns;
+	lwc_string *grid_auto_flow;
+	lwc_string *grid_auto_rows;
+	lwc_string *grid_column_end;
+	lwc_string *grid_column_start;
+	lwc_string *grid_row_end;
+	lwc_string *grid_row_start;
+	lwc_string *grid_template_areas;
+	lwc_string *grid_template_columns;
+	lwc_string *grid_template_rows;
 	css_fixed height;
+	lwc_string *justify_items;
+	lwc_string *justify_self;
 	css_fixed left;
 	css_fixed letter_spacing;
+	lwc_string *line_clamp;
 	css_fixed line_height;
 	lwc_string *list_style_image;
 	css_fixed margin_bottom;
@@ -259,22 +321,32 @@ struct css_computed_style_i {
 	css_fixed max_width;
 	css_fixed min_height;
 	css_fixed min_width;
+	lwc_string *object_fit;
+	lwc_string *object_position;
 	css_fixed opacity;
 	int32_t order;
 	int32_t orphans;
 	css_color outline_color;
 	css_fixed outline_width;
+	lwc_string *overflow_wrap;
 	css_fixed padding_bottom;
 	css_fixed padding_left;
 	css_fixed padding_right;
 	css_fixed padding_top;
+	lwc_string *pointer_events;
 	css_fixed right;
+	lwc_string *row_gap;
 	css_fixed stroke_opacity;
 	css_fixed text_indent;
+	lwc_string *text_overflow;
+	lwc_string *text_shadow;
 	css_fixed top;
+	lwc_string *transform;
+	lwc_string *transform_origin;
 	css_fixed vertical_align;
 	int32_t widows;
 	css_fixed_or_calc width;
+	lwc_string *word_break;
 	css_fixed word_spacing;
 	int32_t z_index;
 };

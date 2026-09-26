@@ -68,6 +68,11 @@ enum op_background_color {
 	BACKGROUND_COLOR_SET		= 0x0080
 };
 
+enum op_raw {
+	RAW_SET				= 0x0080,
+	RAW_NONE			= 0x0000
+};
+
 enum op_background_image {
 	BACKGROUND_IMAGE_URI		= 0x0080,
 	BACKGROUND_IMAGE_NONE		= 0x0000

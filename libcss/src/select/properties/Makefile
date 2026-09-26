@@ -109,6 +109,7 @@ speak_numeral.c \
 speak_punctuation.c \
 stress.c \
 stroke_opacity.c \
+raw_props.c \
 table_layout.c \
 text_align.c \
 text_decoration.c \

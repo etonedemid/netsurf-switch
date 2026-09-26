@@ -194,6 +194,37 @@ css_error css_computed_style_destroy(css_computed_style *style)
 
 	lwc_string_unref(style->i.list_style_image);
 	lwc_string_unref(style->i.background_image);
+	lwc_string_unref(style->i.border_top_left_radius);
+	lwc_string_unref(style->i.border_top_right_radius);
+	lwc_string_unref(style->i.border_bottom_right_radius);
+	lwc_string_unref(style->i.border_bottom_left_radius);
+	lwc_string_unref(style->i.box_shadow);
+	lwc_string_unref(style->i.text_shadow);
+	lwc_string_unref(style->i.transform);
+	lwc_string_unref(style->i.grid_template_columns);
+	lwc_string_unref(style->i.grid_template_rows);
+	lwc_string_unref(style->i.grid_template_areas);
+	lwc_string_unref(style->i.grid_column_start);
+	lwc_string_unref(style->i.grid_column_end);
+	lwc_string_unref(style->i.grid_row_start);
+	lwc_string_unref(style->i.grid_row_end);
+	lwc_string_unref(style->i.grid_auto_flow);
+	lwc_string_unref(style->i.grid_auto_columns);
+	lwc_string_unref(style->i.grid_auto_rows);
+	lwc_string_unref(style->i.row_gap);
+	lwc_string_unref(style->i.justify_items);
+	lwc_string_unref(style->i.object_fit);
+	lwc_string_unref(style->i.aspect_ratio);
+	lwc_string_unref(style->i.text_overflow);
+	lwc_string_unref(style->i.overflow_wrap);
+	lwc_string_unref(style->i.word_break);
+	lwc_string_unref(style->i.background_size);
+	lwc_string_unref(style->i.filter);
+	lwc_string_unref(style->i.transform_origin);
+	lwc_string_unref(style->i.object_position);
+	lwc_string_unref(style->i.justify_self);
+	lwc_string_unref(style->i.pointer_events);
+	lwc_string_unref(style->i.line_clamp);
 
 	if (style->calc != NULL)
 		css_calculator_unref(style->calc);
@@ -437,6 +468,79 @@ uint8_t css_computed_border_left_width(const css_computed_style *style,
 		css_fixed *length, css_unit *unit)
 {
 	return get_border_left_width(style, length, unit);
+}
+
+uint8_t css_computed_raw(const css_computed_style *style,
+		enum css_properties_e prop, lwc_string **value)
+{
+	switch (prop) {
+	case CSS_PROP_BORDER_TOP_LEFT_RADIUS:
+		return get_border_top_left_radius(style, value);
+	case CSS_PROP_BORDER_TOP_RIGHT_RADIUS:
+		return get_border_top_right_radius(style, value);
+	case CSS_PROP_BORDER_BOTTOM_RIGHT_RADIUS:
+		return get_border_bottom_right_radius(style, value);
+	case CSS_PROP_BORDER_BOTTOM_LEFT_RADIUS:
+		return get_border_bottom_left_radius(style, value);
+	case CSS_PROP_BOX_SHADOW:
+		return get_box_shadow(style, value);
+	case CSS_PROP_TEXT_SHADOW:
+		return get_text_shadow(style, value);
+	case CSS_PROP_TRANSFORM:
+		return get_transform(style, value);
+	case CSS_PROP_GRID_TEMPLATE_COLUMNS:
+		return get_grid_template_columns(style, value);
+	case CSS_PROP_GRID_TEMPLATE_ROWS:
+		return get_grid_template_rows(style, value);
+	case CSS_PROP_GRID_TEMPLATE_AREAS:
+		return get_grid_template_areas(style, value);
+	case CSS_PROP_GRID_COLUMN_START:
+		return get_grid_column_start(style, value);
+	case CSS_PROP_GRID_COLUMN_END:
+		return get_grid_column_end(style, value);
+	case CSS_PROP_GRID_ROW_START:
+		return get_grid_row_start(style, value);
+	case CSS_PROP_GRID_ROW_END:
+		return get_grid_row_end(style, value);
+	case CSS_PROP_GRID_AUTO_FLOW:
+		return get_grid_auto_flow(style, value);
+	case CSS_PROP_GRID_AUTO_COLUMNS:
+		return get_grid_auto_columns(style, value);
+	case CSS_PROP_GRID_AUTO_ROWS:
+		return get_grid_auto_rows(style, value);
+	case CSS_PROP_ROW_GAP:
+		return get_row_gap(style, value);
+	case CSS_PROP_JUSTIFY_ITEMS:
+		return get_justify_items(style, value);
+	case CSS_PROP_OBJECT_FIT:
+		return get_object_fit(style, value);
+	case CSS_PROP_ASPECT_RATIO:
+		return get_aspect_ratio(style, value);
+	case CSS_PROP_TEXT_OVERFLOW:
+		return get_text_overflow(style, value);
+	case CSS_PROP_OVERFLOW_WRAP:
+		return get_overflow_wrap(style, value);
+	case CSS_PROP_WORD_BREAK:
+		return get_word_break(style, value);
+	case CSS_PROP_BACKGROUND_SIZE:
+		return get_background_size(style, value);
+	case CSS_PROP_FILTER:
+		return get_filter(style, value);
+	case CSS_PROP_TRANSFORM_ORIGIN:
+		return get_transform_origin(style, value);
+	case CSS_PROP_OBJECT_POSITION:
+		return get_object_position(style, value);
+	case CSS_PROP_JUSTIFY_SELF:
+		return get_justify_self(style, value);
+	case CSS_PROP_POINTER_EVENTS:
+		return get_pointer_events(style, value);
+	case CSS_PROP_LINE_CLAMP:
+		return get_line_clamp(style, value);
+	default:
+		break;
+	}
+	*value = NULL;
+	return CSS_RAW_NONE;
 }
 
 uint8_t css_computed_background_image(const css_computed_style *style,
