@@ -205,7 +205,19 @@ framebuffer_plot_rectangle(const struct redraw_context *ctx,
 	rect.y1 = nsrect->y1;
 
 	if (style->fill_type != PLOT_OP_TYPE_NONE) {
-		nsfb_plot_rectangle_fill(nsfb, &rect, style->fill_colour);
+		unsigned int a = 255 - ((style->fill_colour >> 24) & 0xff);
+		if (a == 0) {
+			/* fully transparent */
+		} else if (a < 255) {
+			/* translucent fills are blended */
+			struct plot_radii zero;
+			memset(&zero, 0, sizeof(zero));
+			fbfx_rounded_fill(ctx, nsrect, &zero, NULL, NULL,
+					style->fill_colour);
+		} else {
+			nsfb_plot_rectangle_fill(nsfb, &rect,
+					style->fill_colour);
+		}
 	}
 
 	if (style->stroke_type != PLOT_OP_TYPE_NONE) {

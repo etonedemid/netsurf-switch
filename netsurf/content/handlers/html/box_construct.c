@@ -350,60 +350,347 @@ static bool box_fetch_style_images(html_content *content, struct box *box)
 
 
 /**
- * Construct the box required for a generated element.
+ * Build the text of a pseudo element's content property.
  *
- * \param n        XML node of type XML_ELEMENT_NODE
+ * \param n     element the pseudo element belongs to
+ * \param item  content items
+ * \param uri   updated with the first url() item, if any
+ * \return malloc()ed text (possibly empty) or NULL on memory exhaustion
+ */
+static char *
+box_generated_text(dom_node *n, const css_computed_content_item *item,
+		lwc_string **uri)
+{
+	size_t len = 0, cap = 64;
+	char *t = malloc(cap);
+
+	if (t == NULL)
+		return NULL;
+	t[0] = '\0';
+	*uri = NULL;
+
+	for (; item != NULL && item->type != CSS_COMPUTED_CONTENT_NONE;
+			item++) {
+		const char *add = NULL;
+		size_t alen = 0;
+		dom_string *attr = NULL;
+
+		switch (item->type) {
+		case CSS_COMPUTED_CONTENT_STRING:
+			add = lwc_string_data(item->data.string);
+			alen = lwc_string_length(item->data.string);
+			break;
+		case CSS_COMPUTED_CONTENT_URI:
+			if (*uri == NULL)
+				*uri = item->data.uri;
+			break;
+		case CSS_COMPUTED_CONTENT_ATTR: {
+			dom_string *name = NULL;
+			if (dom_string_create((const uint8_t *)
+					lwc_string_data(item->data.attr),
+					lwc_string_length(item->data.attr),
+					&name) == DOM_NO_ERR) {
+				dom_element_get_attribute(n, name, &attr);
+				dom_string_unref(name);
+			}
+			if (attr != NULL) {
+				add = dom_string_data(attr);
+				alen = dom_string_byte_length(attr);
+			}
+			break;
+		}
+		case CSS_COMPUTED_CONTENT_OPEN_QUOTE:
+			add = "\xe2\x80\x9c";
+			alen = 3;
+			break;
+		case CSS_COMPUTED_CONTENT_CLOSE_QUOTE:
+			add = "\xe2\x80\x9d";
+			alen = 3;
+			break;
+		default:
+			/* counters are not implemented */
+			break;
+		}
+
+		if (add != NULL && alen > 0) {
+			if (len + alen + 1 > cap) {
+				char *nt;
+				while (len + alen + 1 > cap)
+					cap *= 2;
+				nt = realloc(t, cap);
+				if (nt == NULL) {
+					free(t);
+					if (attr != NULL)
+						dom_string_unref(attr);
+					return NULL;
+				}
+				t = nt;
+			}
+			memcpy(t + len, add, alen);
+			len += alen;
+			t[len] = '\0';
+		}
+		if (attr != NULL)
+			dom_string_unref(attr);
+	}
+	return t;
+}
+
+
+static void box_text_transform(char *s, unsigned int len,
+		enum css_text_transform_e tt);
+
+/** does a pseudo element style generate a box? */
+static bool box_has_pseudo(const css_computed_style *style)
+{
+	const css_computed_content_item *c_item;
+
+	return style != NULL &&
+		css_computed_content(style, &c_item) == CSS_CONTENT_SET &&
+		ns_computed_display(style, false) != CSS_DISPLAY_NONE;
+}
+
+
+/** a block's trailing inline container, created if necessary */
+static struct box *
+box_generated_container(struct box *parent, html_content *content)
+{
+	struct box *ic;
+
+	if (parent->last != NULL && parent->last->type == BOX_INLINE_CONTAINER)
+		return parent->last;
+	ic = box_create(NULL, NULL, false, NULL, NULL, NULL, NULL,
+			content->bctx);
+	if (ic == NULL)
+		return NULL;
+	ic->type = BOX_INLINE_CONTAINER;
+	box_add_child(parent, ic);
+	return ic;
+}
+
+
+/** add text boxes for generated content to an inline container */
+static bool
+box_generated_add_text(struct box *ic, const char *text,
+		const css_computed_style *style, struct box *owner,
+		html_content *content)
+{
+	char *squashed, *t;
+	struct box *tb;
+	size_t tl;
+	enum css_white_space_e ws = css_computed_white_space(style);
+
+	if (ws == CSS_WHITE_SPACE_PRE || ws == CSS_WHITE_SPACE_PRE_WRAP ||
+			ws == CSS_WHITE_SPACE_PRE_LINE)
+		squashed = strdup(text);
+	else
+		squashed = squash_whitespace(text);
+	if (squashed == NULL)
+		return false;
+
+	t = squashed;
+	if (t[0] == ' ') {
+		/* leading space belongs to the previous inline box */
+		if (ic->last != NULL)
+			ic->last->space = UNKNOWN_WIDTH;
+		t++;
+	}
+	tl = strlen(t);
+	if (tl == 0) {
+		free(squashed);
+		return true;
+	}
+
+	/** \todo Not wise to drop const from the computed style */
+	tb = box_create(NULL, (css_computed_style *) style, false,
+			owner->href, owner->target, owner->title, NULL,
+			content->bctx);
+	if (tb == NULL) {
+		free(squashed);
+		return false;
+	}
+	tb->type = BOX_TEXT;
+	tb->text = talloc_strndup(content->bctx, t, tl);
+	if (tb->text == NULL) {
+		free(squashed);
+		return false;
+	}
+	tb->length = tl;
+	if (tb->length > 0 && tb->text[tb->length - 1] == ' ') {
+		tb->space = UNKNOWN_WIDTH;
+		tb->length--;
+	}
+	if (css_computed_text_transform(style) != CSS_TEXT_TRANSFORM_NONE)
+		box_text_transform(tb->text, tb->length,
+				css_computed_text_transform(style));
+	box_add_child(ic, tb);
+	free(squashed);
+	return true;
+}
+
+
+/**
+ * Construct the boxes for a ::before or ::after pseudo element.
+ *
+ * \param n        element the pseudo element belongs to
  * \param content  Content of type CONTENT_HTML that is being processed
- * \param box      Box which may have generated content
- * \param style    Complete computed style for pseudo element, or NULL
- *
- * \todo This is currently incomplete. It just does enough to support
- * the clearfix hack. (http://www.positioniseverything.net/easyclearing.html )
+ * \param box      the element's box
+ * \param style    computed style for the pseudo element, or NULL
+ * \param ic       inline container holding box, if box is inline
  */
 static void
 box_construct_generate(dom_node *n,
 		       html_content *content,
 		       struct box *box,
-		       const css_computed_style *style)
+		       const css_computed_style *style,
+		       struct box *ic)
 {
 	struct box *gen = NULL;
-	enum css_display_e computed_display;
 	const css_computed_content_item *c_item;
+	enum css_display_e disp, static_disp;
+	lwc_string *uri = NULL;
+	char *text;
+	box_type type;
+	bool parent_inline, parent_flex, inline_level, floated, absolute;
+	uint8_t pos;
 
-	/* Nothing to generate if the parent box is not a block */
-	if (box->type != BOX_BLOCK)
+	if (style == NULL)
+		return;
+	/* a pseudo element exists only if content is set */
+	if (css_computed_content(style, &c_item) != CSS_CONTENT_SET)
 		return;
 
-	/* To determine if an element has a pseudo element, we select
-	 * for it and test to see if the returned style's content
-	 * property is set to normal. */
-	if (style == NULL ||
-			css_computed_content(style, &c_item) ==
-			CSS_CONTENT_NORMAL) {
-		/* No pseudo element */
+	disp = ns_computed_display(style, false);
+	if (disp == CSS_DISPLAY_NONE || disp == CSS_DISPLAY_CONTENTS)
 		return;
+	static_disp = ns_computed_display_static(style);
+
+	parent_inline = (box->type == BOX_INLINE);
+	parent_flex = (box->type == BOX_FLEX || box->type == BOX_INLINE_FLEX);
+	if (parent_inline && ic == NULL)
+		return;
+	if (!parent_inline && box->type != BOX_BLOCK &&
+			box->type != BOX_INLINE_BLOCK &&
+			box->type != BOX_FLEX && box->type != BOX_INLINE_FLEX &&
+			box->type != BOX_TABLE_CELL)
+		return;
+
+	floated = css_computed_float(style) != CSS_FLOAT_NONE;
+	pos = css_computed_position(style);
+	absolute = (pos == CSS_POSITION_ABSOLUTE || pos == CSS_POSITION_FIXED);
+
+	if (absolute && (static_disp == CSS_DISPLAY_INLINE ||
+			static_disp == CSS_DISPLAY_INLINE_BLOCK ||
+			static_disp == CSS_DISPLAY_INLINE_FLEX))
+		type = BOX_INLINE_BLOCK;
+	else
+		type = box_map[disp];
+	switch (type) {
+	case BOX_TABLE:
+	case BOX_TABLE_ROW:
+	case BOX_TABLE_ROW_GROUP:
+	case BOX_TABLE_CELL:
+		type = BOX_BLOCK;
+		break;
+	case BOX_NONE:
+		return;
+	default:
+		break;
 	}
 
-	/* create box for this element */
-	computed_display = ns_computed_display(style, box_is_root(n));
-	if (computed_display == CSS_DISPLAY_BLOCK ||
-			computed_display == CSS_DISPLAY_TABLE) {
-		/* currently only support block level boxes */
+	if (parent_flex) {
+		/* blockification of flex items */
+		if (type == BOX_INLINE || type == BOX_INLINE_BLOCK)
+			type = BOX_BLOCK;
+		else if (type == BOX_INLINE_FLEX)
+			type = BOX_FLEX;
+		floated = false;
+	}
 
-		/** \todo Not wise to drop const from the computed style */
-		gen = box_create(NULL, (css_computed_style *) style,
-				false, NULL, NULL, NULL, NULL, content->bctx);
-		if (gen == NULL) {
+	inline_level = type == BOX_INLINE || type == BOX_INLINE_BLOCK ||
+			type == BOX_INLINE_FLEX || floated;
+	if (parent_inline && !inline_level) {
+		/* block inside inline: approximate as inline-block */
+		type = BOX_INLINE_BLOCK;
+		inline_level = true;
+	}
+
+	text = box_generated_text(n, c_item, &uri);
+	if (text == NULL)
+		return;
+
+	/** \todo Not wise to drop const from the computed style */
+	gen = box_create(NULL, (css_computed_style *) style, false,
+			box->href, box->target, box->title, NULL,
+			content->bctx);
+	if (gen == NULL) {
+		free(text);
+		return;
+	}
+	gen->type = type;
+
+	if (inline_level) {
+		if (!parent_inline)
+			ic = box_generated_container(box, content);
+		if (ic == NULL) {
+			free(text);
 			return;
 		}
-
-		/* set box type from computed display */
-		gen->type = box_map[ns_computed_display(
-				style, box_is_root(n))];
-
+		if (floated) {
+			struct box *flt = box_create(NULL, NULL, false,
+					box->href, box->target, box->title,
+					NULL, content->bctx);
+			if (flt == NULL) {
+				free(text);
+				return;
+			}
+			flt->type = css_computed_float(style) ==
+					CSS_FLOAT_LEFT ? BOX_FLOAT_LEFT :
+					BOX_FLOAT_RIGHT;
+			/* floats are blockified */
+			if (gen->type == BOX_INLINE ||
+					gen->type == BOX_INLINE_BLOCK)
+				gen->type = BOX_BLOCK;
+			else if (gen->type == BOX_INLINE_FLEX)
+				gen->type = BOX_FLEX;
+			box_add_child(ic, flt);
+			box_add_child(flt, gen);
+		} else {
+			box_add_child(ic, gen);
+		}
+	} else {
 		box_add_child(box, gen);
-		box_fetch_style_images(content, gen);
 	}
+
+	if (uri != NULL) {
+		/* content: url() replaces the pseudo element with an image */
+		nsurl *url;
+		if (nsurl_create(lwc_string_data(uri), &url) == NSERROR_OK) {
+			gen->flags |= IS_REPLACED;
+			html_fetch_object(content, url, gen, image_types, false);
+			nsurl_unref(url);
+		}
+	} else if (gen->type == BOX_INLINE) {
+		struct box *end;
+		box_generated_add_text(ic, text, style, gen, content);
+		end = box_create(NULL, (css_computed_style *) style, false,
+				box->href, box->target, box->title, NULL,
+				content->bctx);
+		if (end != NULL) {
+			end->type = BOX_INLINE_END;
+			box_add_child(ic, end);
+			gen->inline_end = end;
+			end->inline_end = gen;
+		}
+	} else if (text[0] != '\0') {
+		struct box *inner = box_generated_container(gen, content);
+		if (inner != NULL)
+			box_generated_add_text(inner, text, style, gen,
+					content);
+	}
+
+	free(text);
+	box_fetch_style_images(content, gen);
 }
 
 
@@ -698,12 +985,6 @@ box_construct_element(struct box_construct_ctx *ctx, bool *convert_children)
 		return false;
 	}
 
-	/* Handle the :before pseudo element */
-	if (!(box->flags & IS_REPLACED)) {
-		box_construct_generate(ctx->n, ctx->content, box,
-				box->styles->styles[CSS_PSEUDO_ELEMENT_BEFORE]);
-	}
-
 	if (box->type == BOX_NONE || (ns_computed_display(box->style,
 			props.node_is_root) == CSS_DISPLAY_NONE &&
 			props.node_is_root == false)) {
@@ -814,6 +1095,14 @@ box_construct_element(struct box_construct_ctx *ctx, bool *convert_children)
 		}
 	}
 
+	/* Handle the ::before pseudo element, now the box is placed */
+	if (!(box->flags & IS_REPLACED) && *convert_children) {
+		box_construct_generate(ctx->n, ctx->content, box,
+				box->styles->styles[CSS_PSEUDO_ELEMENT_BEFORE],
+				box->type == BOX_INLINE ?
+					props.inline_container : NULL);
+	}
+
 	return true;
 }
 
@@ -845,6 +1134,15 @@ static void box_construct_element_after(dom_node *n, html_content *content)
 
 		has_children = html_flat_has_children(n);
 
+		/* generated content needs the inline's end even when the
+		 * element itself is empty */
+		if (has_children == false && box->styles != NULL &&
+		    (box_has_pseudo(box->styles->styles[
+				CSS_PSEUDO_ELEMENT_BEFORE]) ||
+		     box_has_pseudo(box->styles->styles[
+				CSS_PSEUDO_ELEMENT_AFTER])))
+			has_children = true;
+
 		if (has_children == false ||
 				(box->flags & CONVERT_CHILDREN) == 0) {
 			/* No children, or didn't want children converted */
@@ -864,6 +1162,13 @@ static void box_construct_element_after(dom_node *n, html_content *content)
 					props.inline_container);
 		}
 
+		/* Handle the ::after pseudo element */
+		if (box->type == BOX_INLINE && box->styles != NULL)
+			box_construct_generate(n, content, box,
+					box->styles->styles[
+						CSS_PSEUDO_ELEMENT_AFTER],
+					props.inline_container);
+
 		inline_end = box_create(NULL, box->style, false,
 				box->href, box->target, box->title,
 				box->id == NULL ? NULL :
@@ -879,9 +1184,11 @@ static void box_construct_element_after(dom_node *n, html_content *content)
 			inline_end->inline_end = box;
 		}
 	} else if (!(box->flags & IS_REPLACED)) {
-		/* Handle the :after pseudo element */
-		box_construct_generate(n, content, box,
-				box->styles->styles[CSS_PSEUDO_ELEMENT_AFTER]);
+		/* Handle the ::after pseudo element */
+		if (box->styles != NULL)
+			box_construct_generate(n, content, box,
+				box->styles->styles[CSS_PSEUDO_ELEMENT_AFTER],
+				NULL);
 	}
 }
 

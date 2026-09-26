@@ -859,8 +859,24 @@ positioned:
 		css_computed_background_color(background->style, &bgcol);
 
 		if (nscss_color_is_transparent(bgcol) == false) {
-			*background_colour = nscss_color_to_ns(bgcol);
-			pstyle_fill_bg.fill_colour = *background_colour;
+			colour fill = nscss_color_to_ns(bgcol);
+			unsigned int a = (bgcol >> 24) & 0xff;
+			pstyle_fill_bg.fill_colour = fill;
+			if (a == 0xff) {
+				*background_colour = fill;
+			} else {
+				/* text is anti-aliased against the blend */
+				colour prev = *background_colour;
+				unsigned int k;
+				colour mixed = 0;
+				for (k = 0; k < 24; k += 8) {
+					unsigned int pc = (prev >> k) & 0xff;
+					unsigned int fc = (fill >> k) & 0xff;
+					mixed |= ((pc * (255 - a) + fc * a) /
+							255) << k;
+				}
+				*background_colour = mixed;
+			}
 			if (plot_colour) {
 				res = ctx->plot->rectangle(ctx, &pstyle_fill_bg, &r);
 				if (res != NSERROR_OK) {
