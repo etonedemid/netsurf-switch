@@ -58,6 +58,8 @@
 #include "html/form_internal.h"
 #include "html/private.h"
 #include "html/media.h"
+
+static void html_toggle_details(dom_node *node);
 #include "html/imagemap.h"
 #include "html/interaction.h"
 
@@ -1428,11 +1430,13 @@ mouse_action_drag_none(html_content *html,
 	 * the default action (following a link, submitting a form) */
 	if ((mouse & BROWSER_MOUSE_CLICK_1) && mas.node != NULL) {
 		if (!fire_generic_dom_event(corestring_dom_click, mas.node,
-				true, true) &&
-		    (mas.result.action == ACTION_NAVIGATE ||
-		     mas.result.action == ACTION_SUBMIT ||
-		     mas.result.action == ACTION_JS)) {
-			mas.result.action = ACTION_NONE;
+				true, true)) {
+			if (mas.result.action == ACTION_NAVIGATE ||
+			    mas.result.action == ACTION_SUBMIT ||
+			    mas.result.action == ACTION_JS)
+				mas.result.action = ACTION_NONE;
+		} else {
+			html_toggle_details(mas.node);
 		}
 	}
 
@@ -1507,6 +1511,69 @@ nserror html_mouse_track(struct content *c,
 			 int x, int y)
 {
 	return html_mouse_action(c, bw, mouse, x, y);
+}
+
+
+/**
+ * Default action of a click in a <summary>: toggle its <details>.
+ */
+static void html_toggle_details(dom_node *node)
+{
+	dom_node *n = node ? dom_node_ref(node) : NULL, *p = NULL;
+
+	while (n != NULL) {
+		dom_html_element_type tag;
+		dom_node_type type;
+
+		if (dom_node_get_node_type(n, &type) == DOM_NO_ERR &&
+		    type == DOM_ELEMENT_NODE &&
+		    dom_html_element_get_tag_type(n, &tag) == DOM_NO_ERR) {
+			if (tag == DOM_HTML_ELEMENT_TYPE_A ||
+			    tag == DOM_HTML_ELEMENT_TYPE_BUTTON ||
+			    tag == DOM_HTML_ELEMENT_TYPE_INPUT)
+				break;
+			if (tag == DOM_HTML_ELEMENT_TYPE_SUMMARY) {
+				dom_node *details = NULL;
+				dom_html_element_type ptag;
+				if (dom_node_get_parent_node(n, &details) ==
+						DOM_NO_ERR && details != NULL &&
+				    dom_html_element_get_tag_type(details,
+						&ptag) == DOM_NO_ERR &&
+				    ptag == DOM_HTML_ELEMENT_TYPE_DETAILS) {
+					dom_string *open = NULL, *empty = NULL;
+					bool has = false;
+					dom_string_create((const uint8_t *)"open",
+							4, &open);
+					dom_string_create((const uint8_t *)"", 0,
+							&empty);
+					if (open != NULL && empty != NULL) {
+						dom_element_has_attribute(details,
+								open, &has);
+						if (has)
+							dom_element_remove_attribute(
+								details, open);
+						else
+							dom_element_set_attribute(
+								details, open,
+								empty);
+					}
+					if (open != NULL)
+						dom_string_unref(open);
+					if (empty != NULL)
+						dom_string_unref(empty);
+				}
+				if (details != NULL)
+					dom_node_unref(details);
+				break;
+			}
+		}
+		if (dom_node_get_parent_node(n, &p) != DOM_NO_ERR)
+			p = NULL;
+		dom_node_unref(n);
+		n = p;
+	}
+	if (n != NULL)
+		dom_node_unref(n);
 }
 
 

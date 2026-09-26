@@ -1699,6 +1699,200 @@ typedef struct pp_item {
 	bool nested;
 } pp_item;
 
+/* ------------------------------------------------------------------ */
+/* Animations: the end state of fill-mode forwards/both animations is  */
+/* applied statically, so content revealed by an entry animation (for  */
+/* example fading in from opacity: 0) is shown.                        */
+
+#define PP_MAX_KEYFRAMES 512
+
+static int pp_block_items(slice block, pp_item **items);
+
+typedef struct pp_keyframes {
+	char *name;
+	char *final;   /**< declarations of the to / 100% keyframe */
+} pp_keyframes;
+
+static pp_keyframes kf_table[PP_MAX_KEYFRAMES];
+static int kf_count;
+
+static const char *kf_lookup(slice name)
+{
+	int i;
+
+	for (i = kf_count - 1; i >= 0; i--) {
+		if (strlen(kf_table[i].name) == name.n &&
+		    strncmp(kf_table[i].name, name.s, name.n) == 0)
+			return kf_table[i].final;
+	}
+	return NULL;
+}
+
+static void kf_store(slice name, slice final)
+{
+	int i;
+	char *n, *f;
+
+	for (i = 0; i < kf_count; i++) {
+		if (strlen(kf_table[i].name) == name.n &&
+		    strncmp(kf_table[i].name, name.s, name.n) == 0) {
+			f = pp_strndup(final.s, final.n);
+			if (f != NULL) {
+				free(kf_table[i].final);
+				kf_table[i].final = f;
+			}
+			return;
+		}
+	}
+	if (kf_count >= PP_MAX_KEYFRAMES)
+		return;
+	n = pp_strndup(name.s, name.n);
+	f = pp_strndup(final.s, final.n);
+	if (n == NULL || f == NULL) {
+		free(n);
+		free(f);
+		return;
+	}
+	kf_table[kf_count].name = n;
+	kf_table[kf_count].final = f;
+	kf_count++;
+}
+
+
+/** record the final keyframe of every @keyframes rule in text */
+static void kf_scan(slice text)
+{
+	size_t i = 0;
+
+	while (i < text.n) {
+		const char *at = memchr(text.s + i, '@', text.n - i);
+		size_t p, ne, open, close;
+		slice name, block;
+
+		if (at == NULL)
+			break;
+		p = at - text.s + 1;
+		i = p;
+		if (text.n - p > 10 && strncasecmp(text.s + p, "-webkit-", 8) == 0)
+			p += 8;
+		if (text.n - p < 10 || strncasecmp(text.s + p, "keyframes", 9) != 0)
+			continue;
+		p += 9;
+		while (p < text.n && pp_space(text.s[p]))
+			p++;
+		ne = p;
+		while (ne < text.n && !pp_space(text.s[ne]) && text.s[ne] != '{')
+			ne++;
+		name = (slice){ text.s + p, ne - p };
+		if (name.n > 1 && (name.s[0] == '"' || name.s[0] == '\'')) {
+			name.s++;
+			name.n -= 2;
+		}
+		open = pp_scan_to(text.s, text.n, ne, "{");
+		if (open >= text.n)
+			break;
+		close = pp_skip_unit(text.s, text.n, open);
+		block = (slice){ text.s + open + 1,
+				close > open + 1 ? close - open - 2 : 0 };
+		i = close;
+		{
+			pp_item *items = NULL;
+			int n = pp_block_items(block, &items), k;
+			slice final = { NULL, 0 };
+			for (k = 0; k < n; k++) {
+				slice sels[8];
+				int ns, j;
+				if (!items[k].nested)
+					continue;
+				ns = pp_split(items[k].prelude, ',', sels, 8);
+				for (j = 0; j < ns; j++) {
+					slice t = sl_trim(sels[j]);
+					if (sl_eq(t, "to") || sl_eq(t, "100%"))
+						final = items[k].block;
+				}
+			}
+			if (final.s != NULL && name.n > 0)
+				kf_store(name, final);
+			free(items);
+		}
+	}
+}
+
+/**
+ * Find the keyframes of a rule's forwards/both animations.
+ *
+ * eturn number of keyframe declaration blocks written to out
+ */
+static int kf_rule_finals(const pp_item *items, int n,
+		const char **out, int max)
+{
+	slice names[8];
+	int nnames = 0, k, count = 0;
+	bool fill = false, infinite = false;
+
+	for (k = 0; k < n; k++) {
+		size_t colon;
+		slice nm, val;
+		if (items[k].nested)
+			continue;
+		colon = pp_scan_to(items[k].prelude.s, items[k].prelude.n, 0,
+				":");
+		if (colon >= items[k].prelude.n)
+			continue;
+		nm = sl_trim((slice){ items[k].prelude.s, colon });
+		val = sl_trim((slice){ items[k].prelude.s + colon + 1,
+				items[k].prelude.n - colon - 1 });
+		if (sl_eq(nm, "animation") || sl_eq(nm, "-webkit-animation") ||
+		    sl_eq(nm, "animation-name") ||
+		    sl_eq(nm, "-webkit-animation-name")) {
+			slice parts[8];
+			int np = pp_split(val, ',', parts, 8), j;
+			nnames = 0;
+			for (j = 0; j < np; j++) {
+				/* each word may be the animation's name */
+				const char *w = parts[j].s;
+				const char *e = parts[j].s + parts[j].n;
+				while (w < e) {
+					const char *we;
+					while (w < e && pp_space(*w))
+						w++;
+					we = w;
+					while (we < e && !pp_space(*we))
+						we++;
+					if (we > w) {
+						slice word = { w, we - w };
+						if (sl_eq(word, "forwards") ||
+						    sl_eq(word, "both"))
+							fill = true;
+						else if (sl_eq(word, "infinite"))
+							infinite = true;
+						else if (kf_lookup(word) &&
+								nnames < 8)
+							names[nnames++] = word;
+					}
+					w = we;
+				}
+			}
+		} else if (sl_eq(nm, "animation-fill-mode") ||
+			   sl_eq(nm, "-webkit-animation-fill-mode")) {
+			if (strncasecmp(val.s, "forwards", 8) == 0 ||
+			    strncasecmp(val.s, "both", 4) == 0)
+				fill = true;
+		} else if (sl_eq(nm, "animation-iteration-count")) {
+			if (strncasecmp(val.s, "infinite", 8) == 0)
+				infinite = true;
+		}
+	}
+	if (!fill || infinite)
+		return 0;
+	for (k = 0; k < nnames && count < max; k++) {
+		const char *f = kf_lookup(names[k]);
+		if (f != NULL)
+			out[count++] = f;
+	}
+	return count;
+}
+
 /** split a block into items */
 static int pp_block_items(slice block, pp_item **items)
 {
@@ -2017,10 +2211,25 @@ static void pp_style_block(pp_ctx *pp, slice *sel, int nsel, slice block,
 				buf_chr(&pp->out, '{');
 		}
 		if (ok) {
+			const char *finals[4];
+			int nf = kf_rule_finals(items, n, finals, 4), f;
 			for (i = 0; i < n; i++) {
 				if (!items[i].nested)
 					pp_declaration(pp, items[i].prelude,
 							&frame, &first);
+			}
+			/* end state of forwards/both animations */
+			for (f = 0; f < nf; f++) {
+				pp_item *kitems = NULL;
+				int kn = pp_block_items((slice){ finals[f],
+						strlen(finals[f]) }, &kitems), k;
+				for (k = 0; k < kn; k++) {
+					if (!kitems[k].nested)
+						pp_declaration(pp,
+							kitems[k].prelude,
+							&frame, &first);
+				}
+				free(kitems);
 			}
 			if (emit_selectors && sel != NULL)
 				buf_chr(&pp->out, '}');
@@ -2104,6 +2313,7 @@ css_error css__preprocess(const uint8_t *data, size_t len, bool inline_style,
 	if (inline_style) {
 		pp_style_block(&pp, NULL, 0, text, NULL, false);
 	} else {
+		kf_scan(text);
 		pp_rules(&pp, text, NULL, 0, NULL);
 	}
 
