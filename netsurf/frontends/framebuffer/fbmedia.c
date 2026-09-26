@@ -809,8 +809,9 @@ static void show_frame(struct decoder *d, AVFrame *f)
 		goto out;
 
 	if (d->back == NULL || d->back_w != ow || d->back_h != oh) {
-		free(d->back);
-		d->back = malloc((size_t)ow * oh * 4);
+		av_free(d->back);
+		/* swscale may write past the end of a row with SIMD */
+		d->back = av_malloc((size_t)ow * oh * 4 + 4096);
 		d->back_w = ow;
 		d->back_h = oh;
 		if (d->back == NULL)
@@ -1091,7 +1092,7 @@ out:
 		avio_context_free(&d.avio);
 	}
 	ms_close(d.io);
-	free(d.back);
+	av_free(d.back);
 	return NULL;
 }
 
@@ -1136,7 +1137,7 @@ static void fbmedia_destroy(struct gui_media *m)
 		trk_close(m->adev);
 	pthread_mutex_destroy(&m->lock);
 	pthread_cond_destroy(&m->cond);
-	free(m->frame);
+	av_free(m->frame);
 	free(m->url);
 	free(m->referer);
 	free(m);
