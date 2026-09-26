@@ -59,6 +59,11 @@ nserror browser_window_invalidate_iframe(struct browser_window *bw);
 nserror browser_window_destroy_iframes(struct browser_window *bw);
 
 /**
+ * Point iframe browser windows at the boxes of a rebuilt box tree.
+ */
+void browser_window_rebind_iframes(struct browser_window *bw);
+
+/**
  * Create and open a frameset for a browser window.
  *
  * \param[in,out] bw The browser window to create the frameset for

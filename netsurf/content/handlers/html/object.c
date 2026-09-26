@@ -722,6 +722,38 @@ html_fetch_object(html_content *c,
 	if (c->aborted)
 		return true;
 
+	/* During a box tree rebuild, reuse the object the old tree had for
+	 * this node, so images need not be fetched and converted again. */
+	if (box != NULL && box->node != NULL) {
+		struct content_html_object **prev = &c->rebuild_old_objects;
+		for (object = c->rebuild_old_objects; object != NULL;
+				prev = &object->next, object = object->next) {
+			bool match = false;
+			if (object->box == NULL || object->content == NULL ||
+			    object->box->node != box->node ||
+			    object->background != background)
+				continue;
+			if (content_get_type(object->content) == CONTENT_HTML)
+				continue;
+			match = nsurl_compare(hlcache_handle_get_url(
+					object->content), url, NSURL_COMPLETE);
+			if (!match) {
+				continue;
+			}
+			*prev = object->next;
+			object->box = box;
+			object->next = c->object_list;
+			c->object_list = object;
+			c->num_objects++;
+			if (content_get_status(object->content) ==
+					CONTENT_STATUS_DONE) {
+				html_object_done(box, object->content,
+						background);
+			}
+			return true;
+		}
+	}
+
 	child.charset = c->encoding;
 	child.quirks = c->base.quirks;
 

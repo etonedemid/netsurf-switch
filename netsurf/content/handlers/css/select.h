@@ -59,4 +59,10 @@ css_error named_ancestor_node(void *pw, void *node,
 
 css_error node_is_visited(void *pw, void *node, bool *match);
 
+/**
+ * Discard LibCSS's cached selection data for a subtree, after the
+ * document has been modified.
+ */
+void nscss_invalidate_node_data(dom_node *root);
+
 #endif

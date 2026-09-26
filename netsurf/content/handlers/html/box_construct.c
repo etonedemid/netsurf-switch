@@ -62,6 +62,8 @@ struct box_construct_ctx {
 	box_construct_complete_cb cb;	/**< Callback to invoke on completion */
 
 	int *bctx;			/**< talloc context */
+
+	bool synchronous;		/**< Convert without yielding */
 };
 
 /**
@@ -1239,6 +1241,7 @@ static void convert_xml_to_box(struct box_construct_ctx *ctx)
 	uint32_t num_processed = 0;
 	const uint32_t max_processed_before_yield = 10;
 
+again:
 	do {
 		convert_children = true;
 
@@ -1311,6 +1314,11 @@ static void convert_xml_to_box(struct box_construct_ctx *ctx)
 		}
 	} while (++num_processed < max_processed_before_yield);
 
+	if (ctx->synchronous) {
+		num_processed = 0;
+		goto again;
+	}
+
 	/* More work to do: schedule a continuation */
 	guit->misc->schedule(0, (void *)convert_xml_to_box, ctx);
 }
@@ -1345,10 +1353,50 @@ dom_to_box(dom_node *n,
 	ctx->root_box = NULL;
 	ctx->cb = cb;
 	ctx->bctx = c->bctx;
+	ctx->synchronous = false;
 
 	*box_conversion_context = ctx;
 
 	return guit->misc->schedule(0, (void *)convert_xml_to_box, ctx);
+}
+
+static void dom_to_box_sync_done(html_content *c, bool success)
+{
+	c->box_conversion_context = success ? NULL : (void *)c;
+}
+
+/* exported function documented in html/box_construct.h */
+nserror dom_to_box_sync(dom_node *n, html_content *c)
+{
+	struct box_construct_ctx *ctx;
+
+	if (c->bctx == NULL) {
+		c->bctx = talloc_zero(0, int);
+		if (c->bctx == NULL) {
+			return NSERROR_NOMEM;
+		}
+	}
+
+	ctx = malloc(sizeof(*ctx));
+	if (ctx == NULL) {
+		return NSERROR_NOMEM;
+	}
+
+	ctx->content = c;
+	ctx->n = dom_node_ref(n);
+	ctx->root_box = NULL;
+	ctx->cb = dom_to_box_sync_done;
+	ctx->bctx = c->bctx;
+	ctx->synchronous = true;
+
+	c->box_conversion_context = NULL;
+	convert_xml_to_box(ctx);
+	if (c->box_conversion_context != NULL) {
+		/* failure was reported */
+		c->box_conversion_context = NULL;
+		return NSERROR_BOX_CONVERT;
+	}
+	return NSERROR_OK;
 }
 
 

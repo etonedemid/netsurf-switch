@@ -210,6 +210,15 @@ typedef struct html_content {
 	 */
 	struct form_control *visible_select_menu;
 
+	/** A box tree rebuild is scheduled */
+	bool rebuild_pending;
+	/** Stylesheets changed since the selection context was made */
+	bool rebuild_styles_changed;
+	/** Earliest time for the next rebuild (rate limiting) */
+	uint64_t rebuild_next_ms;
+	/** Objects of the tree being replaced, for reuse by the new one */
+	struct content_html_object *rebuild_old_objects;
+
 } html_content;
 
 /**

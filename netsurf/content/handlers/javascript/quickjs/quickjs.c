@@ -36,6 +36,7 @@
 #include "content/content.h"
 
 #include "javascript/js.h"
+#include "javascript/content.h"
 #include "javascript/quickjs/qjs_private.h"
 
 #include <nsutils/time.h>
@@ -110,6 +111,10 @@ static void qjs_setup_console(JSContext *ctx)
 /* exported interface documented in js.h */
 void js_initialise(void)
 {
+	/* register the javascript content handler so page scripts are
+	 * recognised and fetched */
+	javascript_init();
+
 	NSLOG(netsurf, INFO,
 	      "QuickJS backend initialised (core DOM bindings)");
 }

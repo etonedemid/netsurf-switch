@@ -18,6 +18,7 @@ S_HTML := box_construct.c	\
 	layout.c		\
 	layout_flex.c		\
 	layout_grid.c		\
+	rebuild.c		\
 	object.c		\
 	redraw.c		\
 	redraw_border.c		\

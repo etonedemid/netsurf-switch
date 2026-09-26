@@ -1749,6 +1749,56 @@ css_error set_libcss_node_data(void *pw, void *node, void *libcss_node_data)
 	return CSS_OK;
 }
 
+/* exported function documented in css/select.h */
+void nscss_invalidate_node_data(dom_node *root)
+{
+	dom_node *n = dom_node_ref(root);
+
+	/* iterative pre-order walk over the subtree */
+	while (n != NULL) {
+		dom_node *next = NULL;
+		dom_node_type type;
+		void *data = NULL;
+
+		if (dom_node_get_node_type(n, &type) == DOM_NO_ERR &&
+				type == DOM_ELEMENT_NODE &&
+				dom_node_get_user_data(n,
+					corestring_dom___ns_key_libcss_node_data,
+					&data) == DOM_NO_ERR &&
+				data != NULL) {
+			void *old = NULL;
+			if (dom_node_set_user_data(n,
+					corestring_dom___ns_key_libcss_node_data,
+					NULL, NULL, &old) == DOM_NO_ERR &&
+					old != NULL) {
+				css_libcss_node_data_handler(&selection_handler,
+						CSS_NODE_DELETED, NULL, n, NULL,
+						old);
+			}
+		}
+
+		dom_node_get_first_child(n, &next);
+		if (next == NULL && n != root) {
+			dom_node *cur = dom_node_ref(n);
+			for (;;) {
+				dom_node *parent = NULL;
+				dom_node_get_next_sibling(cur, &next);
+				if (next != NULL)
+					break;
+				dom_node_get_parent_node(cur, &parent);
+				dom_node_unref(cur);
+				cur = parent;
+				if (cur == NULL || cur == root)
+					break;
+			}
+			if (cur != NULL)
+				dom_node_unref(cur);
+		}
+		dom_node_unref(n);
+		n = next;
+	}
+}
+
 css_error get_libcss_node_data(void *pw, void *node, void **libcss_node_data)
 {
 	dom_node *n = node;

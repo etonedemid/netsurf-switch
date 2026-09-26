@@ -89,6 +89,14 @@ nserror dom_to_box(struct dom_node *n, struct html_content *c, box_construct_com
  */
 nserror cancel_dom_to_box(void *box_conversion_context);
 
+/**
+ * Construct a box tree from a DOM tree without yielding.
+ *
+ * On success the content's layout is the new tree, allocated in the
+ * content's (possibly new) box talloc context.
+ */
+nserror dom_to_box_sync(struct dom_node *n, struct html_content *c);
+
 
 /**
  * Retrieve the box for a dom node, if there is one

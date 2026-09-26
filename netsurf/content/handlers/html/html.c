@@ -59,6 +59,7 @@
 
 #include "html/html.h"
 #include "html/private.h"
+#include "html/rebuild.h"
 #include "html/dom_event.h"
 #include "html/css.h"
 #include "html/object.h"
@@ -364,8 +365,10 @@ void html_finish_conversion(html_content *htmlc)
 	 * would break badly.
 	 */
 	if (htmlc->select_ctx != NULL) {
-		NSLOG(netsurf, INFO,
-				"Ignoring style change: NS layout is static.");
+		/* a stylesheet arrived or changed after the document was
+		 * laid out: restyle and rebuild */
+		htmlc->rebuild_styles_changed = true;
+		html_rebuild_schedule(htmlc);
 		return;
 	}
 
@@ -1237,6 +1240,8 @@ static void html_destroy(struct content *c)
 	/* At this point we can be moderately confident the JS is offline
 	 * so we destroy the JS thread.
 	 */
+	html_rebuild_cancel(html);
+
 	if (html->jsthread != NULL) {
 		js_destroythread(html->jsthread);
 		html->jsthread = NULL;

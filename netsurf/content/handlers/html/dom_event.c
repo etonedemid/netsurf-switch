@@ -38,6 +38,7 @@
 #include "netsurf/bitmap.h"
 
 #include "html/private.h"
+#include "html/rebuild.h"
 #include "html/object.h"
 #include "html/css.h"
 #include "html/box.h"
@@ -711,6 +712,12 @@ dom_default_action_DOMSubtreeModified_cb(struct dom_event *evt, void *pw)
 
 	exc = dom_event_get_target(evt, &node);
 	if ((exc == DOM_NO_ERR) && (node != NULL)) {
+		/* the rendered document changed after layout */
+		if (htmlc->had_initial_layout &&
+		    html_rebuild_node_matters((dom_node *)node)) {
+			html_rebuild_schedule(htmlc);
+		}
+
 		if (htmlc->title == (dom_node *)node) {
 			/* Node is our title node */
 			html_process_title(htmlc, (dom_node *)node);
