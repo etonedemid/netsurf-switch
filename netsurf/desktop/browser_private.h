@@ -302,6 +302,18 @@ nserror browser_window_destroy_internal(struct browser_window *bw);
  * \param  height  Updated to the browser window viewport height
  * \return NSERROR_OK and width and height updated otherwise error code
  */
+/**
+ * Get the scroll offset of a browser window (for scripts).
+ */
+nserror browser_window_script_get_scroll(struct browser_window *bw,
+		int *sx, int *sy);
+
+/**
+ * Scroll a browser window so its top left is at (sx, sy) (for scripts).
+ */
+nserror browser_window_script_set_scroll(struct browser_window *bw,
+		int sx, int sy);
+
 nserror browser_window_get_dimensions(struct browser_window *bw,
 		int *width, int *height);
 

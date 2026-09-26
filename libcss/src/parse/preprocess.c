@@ -603,6 +603,17 @@ static bool pp_media_eval(slice q)
 	return false;
 }
 
+/* exported interface documented in libcss/stylesheet.h */
+bool css_media_query_matches(const char *query)
+{
+	slice q;
+	if (query == NULL)
+		return false;
+	q.s = query;
+	q.n = strlen(query);
+	return pp_media_eval(sl_trim(q));
+}
+
 /** is a property name one LibCSS knows? */
 static bool pp_known_property(slice name)
 {

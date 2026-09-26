@@ -47,6 +47,9 @@ struct jsheap {
 	JSClassID node_class;
 	JSClassID event_class;
 	bool classes_ready;
+
+	int nthreads;  /* live contexts */
+	bool dying;    /* destroy requested while contexts were live */
 };
 
 struct jsthread {
@@ -68,6 +71,9 @@ struct jsthread {
 	JSValue text_proto;
 	JSValue event_proto;
 
+	/* document.readyState: 0 loading, 1 interactive, 2 complete */
+	int ready_state;
+
 	/* active setTimeout/setInterval entries */
 	struct qjs_timer *timers;
 	uint32_t next_timer_id;
@@ -82,6 +88,10 @@ void qjs_dump_error(JSContext *ctx);
 
 /* run queued promise jobs (microtasks) */
 void qjs_run_jobs(JSContext *ctx);
+
+/* native primitives for runtime.js (qjs_native.c) */
+void qjs_native_setup(struct jsthread *thread);
+void qjs_native_closethread(struct jsthread *thread);
 
 /* DOM binding layer (qjs_dom.c) */
 nserror qjs_dom_setup(struct jsthread *thread);

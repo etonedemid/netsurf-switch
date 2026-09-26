@@ -23,9 +23,20 @@ struct dom_node;
 void html_rebuild_schedule(struct html_content *c);
 
 /**
+ * Suppress (or stop suppressing) rebuilds, around DOM changes whose
+ * rendering is updated directly (form control values).
+ */
+void html_rebuild_suppress(bool suppress);
+
+/**
  * Cancel any pending rebuild (content is being destroyed).
  */
 void html_rebuild_cancel(struct html_content *c);
+
+/**
+ * Perform any pending rebuild and reformat now (scripts reading layout).
+ */
+void html_rebuild_flush(struct html_content *c);
 
 /**
  * Could a mutation of this node change what is rendered?

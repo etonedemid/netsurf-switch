@@ -64,6 +64,16 @@
 
 static void html_rebuild_cb(void *p);
 
+static int rebuild_suppressed;
+
+/* exported interface documented in html/rebuild.h */
+void html_rebuild_suppress(bool suppress)
+{
+	rebuild_suppressed += suppress ? 1 : -1;
+	if (rebuild_suppressed < 0)
+		rebuild_suppressed = 0;
+}
+
 /* exported interface documented in html/rebuild.h */
 void html_rebuild_schedule(html_content *c)
 {
@@ -71,7 +81,7 @@ void html_rebuild_schedule(html_content *c)
 	int delay;
 
 	if (c == NULL || c->aborted || !c->had_initial_layout ||
-			c->frameset != NULL)
+			c->frameset != NULL || rebuild_suppressed > 0)
 		return;
 	if (c->rebuild_pending)
 		return;
@@ -96,6 +106,16 @@ void html_rebuild_cancel(html_content *c)
 	if (c->rebuild_pending) {
 		guit->misc->schedule(-1, html_rebuild_cb, c);
 		c->rebuild_pending = false;
+	}
+}
+
+/* exported interface documented in html/rebuild.h */
+void html_rebuild_flush(html_content *c)
+{
+	if (c != NULL && c->rebuild_pending && !c->base.locked &&
+			c->box_conversion_context == NULL && !c->reflowing) {
+		guit->misc->schedule(-1, html_rebuild_cb, c);
+		html_rebuild_cb(c);
 	}
 }
 

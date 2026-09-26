@@ -59,6 +59,9 @@
 #include "javascript/js.h"
 #include "javascript/quickjs/qjs_private.h"
 
+/* runtime.js, embedded at build time */
+#include "quickjs/runtime.js.inc"
+
 /* property names used for the JS-side bookkeeping */
 #define NSPROP_LISTENERS "__ns_listeners"
 #define NSPROP_REGISTERED "__ns_reg"
@@ -1811,7 +1814,9 @@ doc_get_URL(JSContext *ctx, JSValueConst this_val)
 static JSValue
 doc_get_readyState(JSContext *ctx, JSValueConst this_val)
 {
-	return JS_NewString(ctx, "complete");
+	struct jsthread *t = qjs_thread(ctx);
+	static const char *states[] = { "loading", "interactive", "complete" };
+	return JS_NewString(ctx, states[t != NULL ? t->ready_state % 3 : 2]);
 }
 
 static JSValue
@@ -2042,6 +2047,44 @@ event_get_type(JSContext *ctx, JSValueConst this_val)
 	return ret;
 }
 
+#define EVENT_BOOL_GETTER(fname, domfn)					\
+static JSValue								\
+fname(JSContext *ctx, JSValueConst this_val)				\
+{									\
+	dom_event *evt = qjs_this_event(ctx, this_val);			\
+	bool v = false;							\
+	if (evt == NULL)						\
+		return JS_FALSE;					\
+	domfn(evt, &v);							\
+	return JS_NewBool(ctx, v);					\
+}
+EVENT_BOOL_GETTER(event_get_bubbles, dom_event_get_bubbles)
+EVENT_BOOL_GETTER(event_get_cancelable, dom_event_get_cancelable)
+EVENT_BOOL_GETTER(event_get_defaultPrevented, dom_event_is_default_prevented)
+EVENT_BOOL_GETTER(event_get_isTrusted, dom_event_get_is_trusted)
+
+static JSValue
+event_get_eventPhase(JSContext *ctx, JSValueConst this_val)
+{
+	dom_event *evt = qjs_this_event(ctx, this_val);
+	dom_event_flow_phase phase = 0;
+	if (evt == NULL)
+		return JS_NewInt32(ctx, 0);
+	dom_event_get_event_phase(evt, &phase);
+	return JS_NewInt32(ctx, (int32_t)phase);
+}
+
+static JSValue
+event_get_timeStamp(JSContext *ctx, JSValueConst this_val)
+{
+	dom_event *evt = qjs_this_event(ctx, this_val);
+	unsigned int ts = 0;
+	if (evt == NULL)
+		return JS_NewInt32(ctx, 0);
+	dom_event_get_timestamp(evt, &ts);
+	return JS_NewFloat64(ctx, (double)ts);
+}
+
 static JSValue
 event_get_target(JSContext *ctx, JSValueConst this_val)
 {
@@ -2131,6 +2174,12 @@ event_initEvent(JSContext *ctx, JSValueConst this_val,
 static const JSCFunctionListEntry qjs_event_funcs[] = {
 	JS_CGETSET_DEF("type", event_get_type, NULL),
 	JS_CGETSET_DEF("target", event_get_target, NULL),
+	JS_CGETSET_DEF("bubbles", event_get_bubbles, NULL),
+	JS_CGETSET_DEF("cancelable", event_get_cancelable, NULL),
+	JS_CGETSET_DEF("defaultPrevented", event_get_defaultPrevented, NULL),
+	JS_CGETSET_DEF("isTrusted", event_get_isTrusted, NULL),
+	JS_CGETSET_DEF("eventPhase", event_get_eventPhase, NULL),
+	JS_CGETSET_DEF("timeStamp", event_get_timeStamp, NULL),
 	JS_CGETSET_DEF("currentTarget", event_get_currentTarget, NULL),
 	JS_CFUNC_DEF("preventDefault", 0, event_preventDefault),
 	JS_CFUNC_DEF("stopPropagation", 0, event_stopPropagation),
@@ -2789,9 +2838,21 @@ nserror qjs_dom_setup(struct jsthread *t)
 		JS_SetPropertyStr(ctx, global, "Event", ctor);
 	}
 
-	/* expose element proto to the setup script, then hide it */
+	/* expose prototypes to the setup scripts, then hide them */
 	JS_SetPropertyStr(ctx, global, "__ns_Element_proto",
 			  JS_DupValue(ctx, t->element_proto));
+	JS_SetPropertyStr(ctx, global, "__ns_Node_proto",
+			  JS_DupValue(ctx, t->node_proto));
+	JS_SetPropertyStr(ctx, global, "__ns_Document_proto",
+			  JS_DupValue(ctx, t->document_proto));
+	JS_SetPropertyStr(ctx, global, "__ns_Text_proto",
+			  JS_DupValue(ctx, t->text_proto));
+	JS_SetPropertyStr(ctx, global, "__ns_Event_proto",
+			  JS_DupValue(ctx, t->event_proto));
+	JS_SetPropertyStr(ctx, global, "__ns_Media_proto",
+			  JS_DupValue(ctx, t->media_proto));
+
+	qjs_native_setup(t);
 
 	setup = JS_Eval(ctx, qjs_setup_script,
 			sizeof(qjs_setup_script) - 1,
@@ -2800,11 +2861,27 @@ nserror qjs_dom_setup(struct jsthread *t)
 		qjs_dump_error(ctx);
 	JS_FreeValue(ctx, setup);
 
-	{
-		JSAtom atom = JS_NewAtom(ctx, "__ns_Element_proto");
+	/* the web platform runtime (runtime.js) */
+	setup = JS_Eval(ctx, (const char *)runtime_js, runtime_js_len,
+			"<netsurf-runtime>", JS_EVAL_TYPE_GLOBAL);
+	if (JS_IsException(setup))
+		qjs_dump_error(ctx);
+	JS_FreeValue(ctx, setup);
+	qjs_run_jobs(ctx);
 
-		JS_DeleteProperty(ctx, global, atom, 0);
-		JS_FreeAtom(ctx, atom);
+	{
+		static const char *hide[] = {
+			"__ns_Element_proto", "__ns_Node_proto",
+			"__ns_Document_proto", "__ns_Text_proto",
+			"__ns_Event_proto", "__ns_Media_proto", NULL
+		};
+		int i;
+
+		for (i = 0; hide[i] != NULL; i++) {
+			JSAtom atom = JS_NewAtom(ctx, hide[i]);
+			JS_DeleteProperty(ctx, global, atom, 0);
+			JS_FreeAtom(ctx, atom);
+		}
 	}
 
 	JS_FreeValue(ctx, global);
@@ -2815,6 +2892,8 @@ nserror qjs_dom_setup(struct jsthread *t)
 
 void qjs_dom_closethread(struct jsthread *t)
 {
+	qjs_native_closethread(t);
+
 	while (t->timers != NULL) {
 		struct qjs_timer *tm = t->timers;
 
@@ -2872,18 +2951,28 @@ bool qjs_dom_fire_event(struct jsthread *t, const char *type,
 
 	qjs_deadline_start(t);
 
-	/* the load event doubles as DOMContentLoaded at the document */
-	if (strcmp(type, "load") == 0) {
+	/* DOMContentLoaded is dispatched at the document (and seen by
+	 * the window as it bubbles); load only at the window */
+	if (strcmp(type, "DOMContentLoaded") == 0 || strcmp(type, "load") == 0) {
 		JSValue docv = JS_GetPropertyStr(ctx, global, "document");
 
+		t->ready_state = (type[0] == 'l') ? 2 : 1;
 		if (JS_IsObject(docv)) {
 			args[0] = docv;
-			args[1] = JS_NewString(ctx, "DOMContentLoaded");
+			args[1] = JS_NewString(ctx, "readystatechange");
 			args[2] = qjs_dom_wrap_event(t, evt);
 			ret = qjs_call_helper(ctx, "__ns_call", 3, args);
 			JS_FreeValue(ctx, ret);
 			JS_FreeValue(ctx, args[1]);
 			JS_FreeValue(ctx, args[2]);
+			if (type[0] == 'D') {
+				args[1] = JS_NewString(ctx, type);
+				args[2] = qjs_dom_wrap_event(t, evt);
+				ret = qjs_call_helper(ctx, "__ns_call", 3, args);
+				JS_FreeValue(ctx, ret);
+				JS_FreeValue(ctx, args[1]);
+				JS_FreeValue(ctx, args[2]);
+			}
 		}
 		JS_FreeValue(ctx, docv);
 	}

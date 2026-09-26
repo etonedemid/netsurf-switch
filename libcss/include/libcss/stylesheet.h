@@ -160,6 +160,11 @@ bool css_parse_color_text(const char **text, css_color current,
  */
 void css_preprocess_set_viewport(int width, int height);
 
+/**
+ * Evaluate a media query list against the preprocessor's viewport.
+ */
+bool css_media_query_matches(const char *query);
+
 css_error css_stylesheet_next_pending_import(css_stylesheet *parent,
 		lwc_string **url);
 css_error css_stylesheet_register_import(css_stylesheet *parent,

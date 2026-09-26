@@ -282,6 +282,25 @@ static void html_box_convert_done(html_content *c, bool success)
 	dom_node_unref(html);
 }
 
+static void html_fire_load_cb(void *p)
+{
+	html_content *htmlc = p;
+
+	if (htmlc->jsthread != NULL && !htmlc->aborted) {
+		/* the page is laid out and its objects have arrived */
+		js_fire_event(htmlc->jsthread, "load", htmlc->document, NULL);
+	}
+}
+
+/* exported interface documented in html/private.h */
+void html_fire_load_event(html_content *htmlc)
+{
+	if (htmlc->load_fired)
+		return;
+	htmlc->load_fired = true;
+	guit->misc->schedule(0, html_fire_load_cb, htmlc);
+}
+
 /* Documented in html_internal.h */
 nserror
 html_proceed_to_done(html_content *html)
@@ -290,6 +309,7 @@ html_proceed_to_done(html_content *html)
 	case CONTENT_STATUS_READY:
 		if (html->base.active == 0) {
 			content_set_done(&html->base);
+			html_fire_load_event(html);
 			return NSERROR_OK;
 		}
 		break;
@@ -385,7 +405,8 @@ void html_finish_conversion(html_content *htmlc)
 	 * the currentTarget set to the Window object)
 	 */
 	if (htmlc->jsthread != NULL) {
-		js_fire_event(htmlc->jsthread, "load", htmlc->document, NULL);
+		js_fire_event(htmlc->jsthread, "DOMContentLoaded",
+				htmlc->document, NULL);
 	}
 
 	/* convert dom tree to box tree */
@@ -1037,6 +1058,7 @@ static void html_stop(struct content *c)
 		 * in the READY state, transition to the DONE state. */
 		if (c->status == CONTENT_STATUS_READY && c->active == 0) {
 			content_set_done(c);
+			html_fire_load_event(htmlc);
 		}
 
 		break;
@@ -1241,6 +1263,7 @@ static void html_destroy(struct content *c)
 	 * so we destroy the JS thread.
 	 */
 	html_rebuild_cancel(html);
+	guit->misc->schedule(-1, html_fire_load_cb, html);
 
 	if (html->jsthread != NULL) {
 		js_destroythread(html->jsthread);

@@ -140,6 +140,8 @@ nserror js_newheap(int timeout, jsheap **heap_out)
 	}
 
 	JS_SetMemoryLimit(heap->rt, QJS_MEMORY_LIMIT);
+	if (getenv("NS_JS_LEAKS") != NULL)
+		JS_SetDumpFlags(heap->rt, JS_DUMP_LEAKS);
 	JS_SetInterruptHandler(heap->rt, qjs_interrupt_handler, heap);
 	JS_SetRuntimeOpaque(heap->rt, heap);
 	heap->timeout_s = timeout;
@@ -153,6 +155,13 @@ void js_destroyheap(jsheap *heap)
 {
 	if (heap == NULL)
 		return;
+	if (heap->nthreads > 0) {
+		/* page contexts can outlive their window (the content is
+		 * still cached); free the runtime with the last of them */
+		heap->dying = true;
+		return;
+	}
+	JS_RunGC(heap->rt);
 	JS_FreeRuntime(heap->rt);
 	free(heap);
 }
@@ -177,6 +186,7 @@ js_newthread(jsheap *heap, void *win_priv, void *doc_priv, jsthread **out)
 	}
 
 	thread->heap = heap;
+	heap->nthreads++;
 	thread->bw = win_priv;
 	thread->htmlc = doc_priv;
 
@@ -202,10 +212,19 @@ void js_destroythread(jsthread *thread)
 {
 	if (thread == NULL)
 		return;
+	jsheap *heap;
+
 	thread->closed = true;
+	heap = thread->heap;
 	qjs_dom_teardown(thread);
 	JS_FreeContext(thread->ctx);
 	free(thread);
+
+	if (--heap->nthreads == 0 && heap->dying) {
+		heap->nthreads = 0;
+		heap->dying = false;
+		js_destroyheap(heap);
+	}
 }
 
 /* exported interface documented in js.h */

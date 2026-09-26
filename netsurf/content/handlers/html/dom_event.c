@@ -715,7 +715,13 @@ dom_default_action_DOMSubtreeModified_cb(struct dom_event *evt, void *pw)
 		/* the rendered document changed after layout */
 		if (htmlc->had_initial_layout &&
 		    html_rebuild_node_matters((dom_node *)node)) {
-			html_rebuild_schedule(htmlc);
+			struct box *nb = box_for_node((dom_node *)node);
+			/* form value synchronisation redraws the control
+			 * itself and must not rebuild the page */
+			if (nb == NULL || nb->gadget == NULL ||
+			    !nb->gadget->syncing) {
+				html_rebuild_schedule(htmlc);
+			}
 		}
 
 		if (htmlc->title == (dom_node *)node) {

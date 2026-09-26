@@ -210,6 +210,9 @@ typedef struct html_content {
 	 */
 	struct form_control *visible_select_menu;
 
+	/** The window load event has been dispatched */
+	bool load_fired;
+
 	/** A box tree rebuild is scheduled */
 	bool rebuild_pending;
 	/** Stylesheets changed since the selection context was made */
@@ -244,6 +247,11 @@ void html__redraw_a_box(html_content *htmlc, struct box *box);
  * \param htmlc Content to convert
  */
 void html_finish_conversion(html_content *htmlc);
+
+/**
+ * Dispatch the window load event (once) after the page is done.
+ */
+void html_fire_load_event(html_content *htmlc);
 
 
 /**

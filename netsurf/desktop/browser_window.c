@@ -255,6 +255,31 @@ browser_window_set_scroll(struct browser_window *bw, const struct rect *rect)
 }
 
 
+/* exported interface documented in desktop/browser_private.h */
+nserror browser_window_script_get_scroll(struct browser_window *bw,
+		int *sx, int *sy)
+{
+	*sx = *sy = 0;
+	if (bw->window != NULL) {
+		return guit->window->get_scroll(bw->window, sx, sy);
+	}
+	if (bw->scroll_x != NULL)
+		*sx = scrollbar_get_offset(bw->scroll_x);
+	if (bw->scroll_y != NULL)
+		*sy = scrollbar_get_offset(bw->scroll_y);
+	return NSERROR_OK;
+}
+
+/* exported interface documented in desktop/browser_private.h */
+nserror browser_window_script_set_scroll(struct browser_window *bw,
+		int sx, int sy)
+{
+	struct rect r;
+	r.x0 = r.x1 = sx < 0 ? 0 : sx;
+	r.y0 = r.y1 = sy < 0 ? 0 : sy;
+	return browser_window_set_scroll(bw, &r);
+}
+
 /**
  * Internal helper for getting the positional features
  *
