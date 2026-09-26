@@ -69,6 +69,7 @@
 #include "html/layout.h"
 #include "html/layout_internal.h"
 #include "html/media.h"
+#include "css/css_fx.h"
 #include "html/canvas.h"
 #include "html/table.h"
 
@@ -2189,6 +2190,9 @@ bool layout_table(
 }
 
 
+static int line_height(const css_unit_ctx *unit_len_ctx,
+		const css_computed_style *style);
+
 /**
  * Manimpulate box height according to CSS min-height and max-height properties
  *
@@ -2227,6 +2231,44 @@ static bool layout_apply_minmax_height(
 		/* Box is an inline block */
 		assert(box->parent->parent);
 		containing_block = box->parent->parent;
+	}
+
+	if (box->style && box->object == NULL && !box_has_intrinsic(box)) {
+		css_fixed hv = 0;
+		css_unit hu = CSS_UNIT_PX;
+		float ratio;
+		int lines;
+
+		/* aspect-ratio gives auto heights a minimum from the width */
+		if (css_computed_height(box->style, &hv, &hu) ==
+				CSS_HEIGHT_AUTO && box->width > 0 &&
+		    box->width != AUTO &&
+		    cssfx_aspect_ratio(box->style, &ratio)) {
+			h = (int)(box->width / ratio + 0.5f);
+			if (css_computed_box_sizing(box->style) ==
+					CSS_BOX_SIZING_BORDER_BOX)
+				h -= box->padding[TOP] + box->padding[BOTTOM] +
+					box->border[TOP].width +
+					box->border[BOTTOM].width -
+					(box->padding[LEFT] + box->padding[RIGHT] +
+					 box->border[LEFT].width +
+					 box->border[RIGHT].width) / ratio;
+			if (h > box->height) {
+				box->height = h;
+				updated = true;
+			}
+		}
+
+		/* line-clamp limits the height to whole lines */
+		lines = cssfx_line_clamp(box->style);
+		if (lines > 0 && css_computed_overflow_y(box->style) !=
+				CSS_OVERFLOW_VISIBLE) {
+			h = lines * line_height(unit_len_ctx, box->style);
+			if (h < box->height) {
+				box->height = h;
+				updated = true;
+			}
+		}
 	}
 
 	if (box->style) {

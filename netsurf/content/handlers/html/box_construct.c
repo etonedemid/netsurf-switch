@@ -349,6 +349,70 @@ static bool box_fetch_style_images(html_content *content, struct box *box)
 }
 
 
+/* ------------------------------------------------------------------ */
+/* CSS counters: a flat set of named counters maintained in document   */
+/* order while boxes are constructed (nested scopes are not modelled). */
+
+#define BOX_MAX_COUNTERS 64
+
+static struct {
+	lwc_string *name;
+	int value;
+} box_counters[BOX_MAX_COUNTERS];
+static int box_ncounters;
+
+static void box_counters_reset(void)
+{
+	int i;
+
+	for (i = 0; i < box_ncounters; i++)
+		lwc_string_unref(box_counters[i].name);
+	box_ncounters = 0;
+}
+
+static int *box_counter(lwc_string *name, bool create)
+{
+	int i;
+	bool match;
+
+	for (i = 0; i < box_ncounters; i++) {
+		if (lwc_string_isequal(box_counters[i].name, name, &match) ==
+				lwc_error_ok && match)
+			return &box_counters[i].value;
+	}
+	if (!create || box_ncounters >= BOX_MAX_COUNTERS)
+		return NULL;
+	box_counters[box_ncounters].name = lwc_string_ref(name);
+	box_counters[box_ncounters].value = 0;
+	return &box_counters[box_ncounters++].value;
+}
+
+/** apply an element's counter-reset and counter-increment */
+static void box_counters_apply(const css_computed_style *style)
+{
+	const css_computed_counter *c = NULL;
+
+	if (style == NULL)
+		return;
+	if (css_computed_counter_reset(style, &c) == CSS_COUNTER_RESET_NAMED &&
+			c != NULL) {
+		for (; c->name != NULL; c++) {
+			int *v = box_counter(c->name, true);
+			if (v != NULL)
+				*v = FIXTOINT(c->value);
+		}
+	}
+	c = NULL;
+	if (css_computed_counter_increment(style, &c) ==
+			CSS_COUNTER_INCREMENT_NAMED && c != NULL) {
+		for (; c->name != NULL; c++) {
+			int *v = box_counter(c->name, true);
+			if (v != NULL)
+				*v += FIXTOINT(c->value);
+		}
+	}
+}
+
 /**
  * Build the text of a pseudo element's content property.
  *
@@ -374,6 +438,7 @@ box_generated_text(dom_node *n, const css_computed_content_item *item,
 		const char *add = NULL;
 		size_t alen = 0;
 		dom_string *attr = NULL;
+		char num[16];
 
 		switch (item->type) {
 		case CSS_COMPUTED_CONTENT_STRING:
@@ -407,8 +472,18 @@ box_generated_text(dom_node *n, const css_computed_content_item *item,
 			add = "\xe2\x80\x9d";
 			alen = 3;
 			break;
+		case CSS_COMPUTED_CONTENT_COUNTER:
+		case CSS_COMPUTED_CONTENT_COUNTERS: {
+			int *v = box_counter(item->type ==
+					CSS_COMPUTED_CONTENT_COUNTER ?
+					item->data.counter.name :
+					item->data.counters.name, false);
+			snprintf(num, sizeof(num), "%d", v ? *v : 0);
+			add = num;
+			alen = strlen(num);
+			break;
+		}
 		default:
-			/* counters are not implemented */
 			break;
 		}
 
@@ -615,6 +690,7 @@ box_construct_generate(dom_node *n,
 		inline_level = true;
 	}
 
+	box_counters_apply(style);
 	text = box_generated_text(n, c_item, &uri);
 	if (text == NULL)
 		return;
@@ -1094,6 +1170,8 @@ box_construct_element(struct box_construct_ctx *ctx, bool *convert_children)
 				box_add_child(props.containing_block, box);
 		}
 	}
+
+	box_counters_apply(box->style);
 
 	/* Handle the ::before pseudo element, now the box is placed */
 	if (!(box->flags & IS_REPLACED) && *convert_children) {
@@ -1648,6 +1726,8 @@ dom_to_box(dom_node *n,
 		return NSERROR_NOMEM;
 	}
 
+	box_counters_reset();
+
 	ctx->content = c;
 	ctx->n = dom_node_ref(n);
 	ctx->root_box = NULL;
@@ -1681,6 +1761,8 @@ nserror dom_to_box_sync(dom_node *n, html_content *c)
 	if (ctx == NULL) {
 		return NSERROR_NOMEM;
 	}
+
+	box_counters_reset();
 
 	ctx->content = c;
 	ctx->n = dom_node_ref(n);

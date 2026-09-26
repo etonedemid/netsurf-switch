@@ -1285,12 +1285,45 @@ static bool html_redraw_text_box(const html_content *html, struct box *box,
 {
 	bool excluded = (box->object != NULL);
 	plot_font_style_t fstyle;
+	struct box *blk = (box->parent != NULL) ? box->parent->parent : NULL;
+	const char *text = box->text;
+	size_t length = box->length;
+	char *elided = NULL;
 
 	font_plot_style_from_css(&html->unit_len_ctx, box->style, &fstyle);
 	fstyle.background = current_background_color;
 
-	if (!text_redraw(box->text,
-			 box->length,
+	/* text-overflow: ellipsis on the clipping block */
+	if (blk != NULL && blk->style != NULL && box->width > 0 &&
+	    css_computed_overflow_x(blk->style) != CSS_OVERFLOW_VISIBLE) {
+		const char *to = cssfx_raw(blk->style, CSS_PROP_TEXT_OVERFLOW);
+		if (to != NULL && strstr(to, "ellipsis") != NULL) {
+			int bx, by, tx, ty, limit, ew = 0;
+			box_coords(blk, &bx, &by);
+			box_coords(box, &tx, &ty);
+			limit = bx + blk->padding[LEFT] + blk->width - tx;
+			if (limit < box->width) {
+				size_t offset = 0;
+				int actual = 0;
+				guit->layout->width(&fstyle, "\xe2\x80\xa6", 3, &ew);
+				if (limit - ew > 0)
+					guit->layout->position(&fstyle, box->text,
+						box->length, limit - ew,
+						&offset, &actual);
+				elided = malloc(offset + 4);
+				if (elided != NULL) {
+					memcpy(elided, box->text, offset);
+					memcpy(elided + offset, "\xe2\x80\xa6", 3);
+					elided[offset + 3] = '\0';
+					text = elided;
+					length = offset + 3;
+				}
+			}
+		}
+	}
+
+	if (!text_redraw(text,
+			 length,
 			 box->byte_offset,
 			 box->space,
 			 &fstyle,
@@ -1301,9 +1334,12 @@ static bool html_redraw_text_box(const html_content *html, struct box *box,
 			 excluded,
 			 (struct content *)html,
 			 html->sel,
-			 ctx))
+			 ctx)) {
+		free(elided);
 		return false;
+	}
 
+	free(elided);
 	return true;
 }
 

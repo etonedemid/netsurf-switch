@@ -1143,3 +1143,47 @@ bool cssfx_mask_geometry(const css_computed_style *style,
 	}
 	return true;
 }
+
+/* exported interface documented in css_fx.h */
+bool cssfx_aspect_ratio(const css_computed_style *style, float *ratio)
+{
+	const char *t = cssfx_raw(style, CSS_PROP_ASPECT_RATIO);
+	const char *p;
+	char *end;
+	double a, b = 1;
+
+	if (t == NULL)
+		return false;
+	p = t;
+	skip_ws(&p);
+	if (match_word(&p, "auto"))
+		skip_ws(&p);
+	if (*p == '\0')
+		return false;
+	a = strtod(p, &end);
+	if (end == p || !(a > 0))
+		return false;
+	p = end;
+	skip_ws(&p);
+	if (*p == '/') {
+		p++;
+		skip_ws(&p);
+		b = strtod(p, &end);
+		if (end == p || !(b > 0))
+			return false;
+	}
+	*ratio = (float)(a / b);
+	return true;
+}
+
+/* exported interface documented in css_fx.h */
+int cssfx_line_clamp(const css_computed_style *style)
+{
+	const char *t = cssfx_raw(style, CSS_PROP_LINE_CLAMP);
+	long n;
+
+	if (t == NULL)
+		return 0;
+	n = strtol(t, NULL, 10);
+	return n > 0 && n < 1000 ? (int)n : 0;
+}

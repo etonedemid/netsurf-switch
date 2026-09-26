@@ -123,6 +123,18 @@ bool cssfx_layer_effects(const css_computed_style *style,
 bool cssfx_translation(const css_computed_style *style,
 		const css_unit_ctx *uctx, int w, int h, int *dx, int *dy);
 
+/**
+ * Preferred aspect ratio (width / height) from aspect-ratio.
+ *
+ * \return false if none
+ */
+bool cssfx_aspect_ratio(const css_computed_style *style, float *ratio);
+
+/**
+ * Number of lines from -webkit-line-clamp / line-clamp, or 0.
+ */
+int cssfx_line_clamp(const css_computed_style *style);
+
 /** how a mask image is sized within the box */
 enum cssfx_mask_fit {
 	CSSFX_MASK_STRETCH,  /**< 100% 100% (or auto for SVG) */
@@ -141,7 +153,8 @@ struct cssfx_mask {
 /**
  * Get the url() of an element's mask image.
  *
- * eturn malloc()ed absolute URL or NULL if no image mask
+ * 
+eturn malloc()ed absolute URL or NULL if no image mask
  */
 char *cssfx_mask_url(const css_computed_style *style);
 
