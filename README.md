@@ -4,6 +4,14 @@ A true port of the NetSurf browser engine to Nintendo Switch homebrew, the first
 of its kind. Built with devkitA64/libnx in WSL Arch Linux. Verified rendering
 real sites over HTTPS on hardware.
 
+## Support
+
+If you'd like to support development:
+
+- USDT (TRC20): `TCJ4HMJF3JHQG66khYTj98Em7v74j3cry9`
+- Bitcoin: `bc1qaeypp2m5h74alrmhyu4zvzf3yyf58k6mcw7868`
+- Monero: `45npN9u6zMFE7xMxfszfWBX2jdDdtZaogcGex4s5D7QDNsGPtbXjtjtXpbx9cnxLaKXC1KzGgckN2fMwrYrw5yqPTG2KiPj`
+
 ## What's in
 
 - Engine at upstream git HEAD ("3.12 Dev"): HTML5 parsing (hubbub), CSS
@@ -78,11 +86,3 @@ JavaScript can be turned off with `enable_javascript:0` in
 - A or **ZR**: click / **ZL**: alternate/context click (NetSurf's action-2)
 - L/R: page up/down / B: escape / Plus: quit
 - Tap URL bar or any HTML text field: native keyboard
-
-## Support
-
-If you'd like to support development:
-
-- USDT (TRC20): `TCJ4HMJF3JHQG66khYTj98Em7v74j3cry9`
-- Bitcoin: `bc1qaeypp2m5h74alrmhyu4zvzf3yyf58k6mcw7868`
-- Monero: `45npN9u6zMFE7xMxfszfWBX2jdDdtZaogcGex4s5D7QDNsGPtbXjtjtXpbx9cnxLaKXC1KzGgckN2fMwrYrw5yqPTG2KiPj`
